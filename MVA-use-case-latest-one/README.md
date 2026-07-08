@@ -23,17 +23,19 @@ Every stage produces typed results. Non-critical failures do not destroy success
 
 ### Local Development
 
-```bash
-# Start the shared Postgres server (once, from outside this repo)
-cd ../Shared-Postgres
-docker compose up -d
-cd -
+This project shares one virtual environment with the rest of the pipeline — see the [root README](../README.md). From the repo root:
 
-# Clone and install (either works — pyproject.toml is the source of truth,
-# requirements.txt/requirements-dev.txt are provided as a plain pip alternative)
-pip install -e ".[dev]"
-# — or —
+```bash
+# Start the shared Postgres server (once)
+cd Shared-Postgres
+docker compose up -d
+cd ..
+
+# Create the shared environment and install (once, for all three services)
+python -m venv venv
+.\venv\Scripts\activate
 pip install -r requirements.txt -r requirements-dev.txt
+cd MVA-use-case-latest-one
 
 # Copy env file
 cp .env.example .env
@@ -44,7 +46,7 @@ cp .env.example .env
 alembic upgrade head
 
 # Start the server
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --port 8001
 
 # Run tests
 python -m pytest tests/ -v
@@ -76,7 +78,7 @@ server above — running `docker-compose up` directly in this directory does not
 ## Example Usage
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/profile-runs \
+curl -X POST http://localhost:8001/api/v1/profile-runs \
   -F "file=@payments.csv" \
   -F "primary_domain=Payments" \
   -F 'schema_metadata={"columns":[{"column_name":"amount","description":"Payment amount","mandatory":true}]}'

@@ -32,8 +32,10 @@ Schema_Intelligence_layer/
 │   └── quality_threshold.json     # Configuration file for quality checks, limits, and weights
 ├── test_data/                     # Directory containing sample Excel and CSV datasets
 ├── test_local.py                  # Standalone CLI test pipeline script
-├── requirements.txt               # Project dependencies
 └── README.md                      # Project documentation
+
+# Dependencies (requirements.txt / requirements-dev.txt) live at the repo root,
+# shared with the other two services — see ../README.md
 ```
 
 ### Detailed File Responsibilities
@@ -260,31 +262,30 @@ docker compose up -d
 This starts one `postgres:16-alpine` container on `localhost:5433` with a persistent volume, serving every agent's tables under its own schema. (Port `5433` is used instead of the default `5432` to avoid clashing with any existing local PostgreSQL install.) Running `docker compose up` from *this* directory does nothing — the local `docker-compose.yml` here is a comment-only pointer to the shared setup.
 
 ### 3. Virtual Environment Setup
+This project shares one virtual environment with the rest of the pipeline — set up once from the **repo root**, not from inside this folder:
 ```powershell
-# Create environment
+cd ..
 python -m venv venv
-
-# Activate environment (Windows)
 .\venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
+pip install -r requirements.txt -r requirements-dev.txt
+cd Schema-Intelligence-Layer
 ```
+See the [root README](../README.md) for why — one dependency set, no version drift between services.
 
 ### 4. CLI Testing Tool
 Run the offline testing tool directly from the terminal. It prints validation checklists and logs without launching the server:
 ```powershell
 # Test a single file
-.\venv\Scripts\python.exe test_local.py test_data/neutral_payments_variance_trxnid_1000.xlsx
+..\venv\Scripts\python.exe test_local.py test_data/neutral_payments_variance_trxnid_1000.xlsx
 
 # Test all datasets inside the test_data directory
-.\venv\Scripts\python.exe test_local.py
+..\venv\Scripts\python.exe test_local.py
 ```
 
 ### 5. Running the API Server
 Launch the FastAPI development server:
 ```powershell
-.\venv\Scripts\python.exe -m uvicorn app.main:app --port 8000 --reload
+..\venv\Scripts\python.exe -m uvicorn app.main:app --port 8000 --reload
 ```
 Access the interactive OpenAPI swagger documentation at `http://127.0.0.1:8000/docs`.
 

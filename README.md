@@ -1,6 +1,8 @@
 # MVA — Multi-Agent Data Pipeline
 
-A multi-agent pipeline that ingests a CSV/Excel dataset, classifies it, and profiles it end-to-end — quality gating, schema classification, structural profiling, hierarchy inference, business-rule validation, AI-readiness scoring, chart generation, and AI-proposed rule suggestions with a human approve/reject loop.
+**One system** that ingests a CSV/Excel dataset and takes it end-to-end: quality gating, schema classification, structural profiling, hierarchy inference, business-rule validation, AI-readiness scoring, chart generation, and AI-proposed rule suggestions with a human approve/reject loop.
+
+Internally it's organized as three cooperating services plus a shared database — not because they're separate projects, but because each stage (classification, profiling, orchestration) is cleanly separable and independently testable. One repo, one dependency set, one way to run it.
 
 ## Architecture
 
@@ -29,30 +31,35 @@ A multi-agent pipeline that ingests a CSV/Excel dataset, classifies it, and prof
                    └─────────────────────┘
 ```
 
-Each agent is an independently runnable FastAPI service — the orchestrator is the only thing that chains them together, and it's deliberately simple (sequential HTTP calls, no workflow framework). Every service can also be called directly on its own port for testing or standalone use.
+Each service runs as its own FastAPI process (so they can be started, stopped, and observed independently), but they share one virtual environment, one dependency list, and one repo history. The orchestrator is the only thing that chains them together, and it's deliberately simple (sequential HTTP calls, no workflow framework).
 
-## Components
+## What's inside
 
-| Folder | What it is | Port |
+| Folder | Role | Port |
 |---|---|---|
-| [`Schema-Intelligence-Layer`](./Schema-Intelligence-Layer) | Agent 1 — quality gate, LLM column descriptions, business domain classification | 8000 |
-| [`MVA-use-case-latest-one`](./MVA-use-case-latest-one) | Agent 2 — deep structural profiling, quality/readiness scoring, hierarchy inference, chart generation, AI rule suggestions | 8001 |
-| [`Agent-Orchestrator`](./Agent-Orchestrator) | Chains Agent 1 → Agent 2 into one call | 8002 |
-| [`Shared-Postgres`](./Shared-Postgres) | The single Postgres server both agents persist to, schema-isolated per agent | 5433 |
+| [`Schema-Intelligence-Layer`](./Schema-Intelligence-Layer) | Quality gate, LLM column descriptions, business domain classification | 8000 |
+| [`MVA-use-case-latest-one`](./MVA-use-case-latest-one) | Deep structural profiling, quality/readiness scoring, hierarchy inference, chart generation, AI rule suggestions | 8001 |
+| [`Agent-Orchestrator`](./Agent-Orchestrator) | Chains the two above into one call | 8002 |
+| [`Shared-Postgres`](./Shared-Postgres) | The one Postgres server everything persists to, schema-isolated per service | 5433 |
 
-Each has its own README with full setup, API reference, and design notes — this file is just the map.
+Each has its own README going deeper on that piece specifically — this file is the map, not a duplicate.
 
 ## Quick Start
 
-1. Each of the four folders needs its own Python virtual environment and dependencies installed once — see each folder's README for exact steps.
-2. Each of `Schema-Intelligence-Layer`, `MVA-use-case-latest-one`, and `Agent-Orchestrator` needs its own `.env` file (copy from `.env.example` in each) — Agent 1 and Agent 2 need a Groq API key for LLM features; the orchestrator needs none.
+1. One virtual environment for the whole thing, from the repo root:
+   ```bash
+   python -m venv venv
+   .\venv\Scripts\activate
+   pip install -r requirements.txt -r requirements-dev.txt
+   ```
+2. Each of `Schema-Intelligence-Layer`, `MVA-use-case-latest-one`, and `Agent-Orchestrator` still needs its own `.env` file (copy from `.env.example` in each) — Agent 1 and Agent 2 need a Groq API key for LLM features; the orchestrator needs none.
 3. Start everything at once:
 
 ```powershell
 powershell -File start-all.ps1
 ```
 
-This starts the shared Postgres container plus all three services, each in its own terminal window. Then:
+This starts the shared Postgres container plus all three services (using the one shared venv), each in its own terminal window. Then:
 
 - Full pipeline (recommended entry point): `http://127.0.0.1:8002/docs`
 - Agent 1 alone: `http://127.0.0.1:8000/docs`

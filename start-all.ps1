@@ -11,17 +11,19 @@ Pop-Location
 
 Start-Sleep -Seconds 2
 
+$py = "$root\venv\Scripts\python.exe"
+
 Write-Host "Starting Agent 1 (Schema Intelligence Layer) on :8000..." -ForegroundColor Cyan
 Start-Process powershell -ArgumentList "-NoExit", "-Command", `
-    "cd '$root\Schema-Intelligence-Layer'; .\venv\Scripts\python.exe -m uvicorn app.main:app --port 8000 --reload"
+    "cd '$root\Schema-Intelligence-Layer'; & '$py' -m uvicorn app.main:app --port 8000 --reload"
 
 Write-Host "Starting Agent 2 (Data Profiling Layer) on :8001..." -ForegroundColor Cyan
 Start-Process powershell -ArgumentList "-NoExit", "-Command", `
-    "cd '$root\MVA-use-case-latest-one'; .\venv\Scripts\python.exe -m uvicorn app.main:app --port 8001 --reload"
+    "cd '$root\MVA-use-case-latest-one'; & '$py' -m uvicorn app.main:app --port 8001 --reload"
 
 Write-Host "Starting Orchestrator on :8002..." -ForegroundColor Cyan
 Start-Process powershell -ArgumentList "-NoExit", "-Command", `
-    "cd '$root\Agent-Orchestrator'; .\venv\Scripts\python.exe -m uvicorn app.main:app --port 8002 --reload"
+    "cd '$root\Agent-Orchestrator'; & '$py' -m uvicorn app.main:app --port 8002 --reload"
 
 Write-Host ""
 Write-Host "All services launching. Give them a few seconds, then check:" -ForegroundColor Green

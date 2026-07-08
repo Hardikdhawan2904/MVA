@@ -36,15 +36,19 @@ If Agent 1 rejects the file at its quality gate, the pipeline stops there — Ag
 
 ## Local Setup
 
+This project shares one virtual environment with the rest of the pipeline — set up once from the **repo root** (see the [root README](../README.md)), not from inside this folder:
+
 ```bash
+cd ..
 python -m venv venv
 .\venv\Scripts\activate
-pip install -r requirements.txt
+pip install -r requirements.txt -r requirements-dev.txt
+cd Agent-Orchestrator
 
 # Copy env file and adjust if Agent 1 / Agent 2 run on different hosts/ports
 cp .env.example .env
 
-uvicorn app.main:app --reload --port 8002
+..\venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8002
 ```
 
 Agent 1 and Agent 2 must already be running (see their own READMEs) — the orchestrator only coordinates between them, it has no database or LLM of its own.
