@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+pandas
+numpy
+sqlalchemy
+alembic
+psycopg2-binary
+python-multipart
+pyyaml
+openpyxl
+chardet
+httpx
+structlog

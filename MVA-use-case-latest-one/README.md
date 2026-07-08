@@ -29,8 +29,11 @@ cd ../Shared-Postgres
 docker compose up -d
 cd -
 
-# Clone and install
+# Clone and install (either works — pyproject.toml is the source of truth,
+# requirements.txt/requirements-dev.txt are provided as a plain pip alternative)
 pip install -e ".[dev]"
+# — or —
+pip install -r requirements.txt -r requirements-dev.txt
 
 # Copy env file
 cp .env.example .env

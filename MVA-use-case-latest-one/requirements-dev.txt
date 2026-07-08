@@ -1,0 +1,9 @@
+# Additional dependencies for running the test suite.
+# Install with: pip install -r requirements.txt -r requirements-dev.txt
+
+pytest
+pytest-asyncio
+pytest-cov
+httpx
+factory-boy
+freezegun
