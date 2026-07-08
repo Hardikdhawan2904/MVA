@@ -1,0 +1,260 @@
+# Data Category Classification Rules
+# Maps columns to business data categories
+# Each category has keyword patterns checked against column names
+version: 1
+
+# Confidence threshold: below this, ask LLM to classify
+llm_fallback_threshold: 0.65
+
+categories:
+  Transaction Data:
+    keywords:
+      - transaction
+      - txn
+      - payment
+      - purchase
+      - order
+      - invoice
+      - transfer
+      - settlement
+      - clearing
+      - refund
+      - chargeback
+      - remittance
+    semantic_type_hints:
+      - monetary_amount
+      - transaction_amount
+      - payment
+
+  Financial Data:
+    keywords:
+      - amount
+      - amt
+      - price
+      - revenue
+      - cost
+      - balance
+      - fee
+      - charge
+      - salary
+      - income
+      - expense
+      - profit
+      - budget
+      - forecast
+      - actual
+      - variance
+      - margin
+      - interest
+      - dividend
+      - tax
+      - depreciation
+    semantic_type_hints:
+      - revenue
+      - expense
+      - profit
+      - margin
+      - budget
+      - forecast
+
+  Demographic Data:
+    keywords:
+      - age
+      - gender
+      - sex
+      - birth
+      - dob
+      - ethnicity
+      - race
+      - nationality
+      - marital
+      - education
+      - occupation
+      - religion
+      - language
+      - income_bracket
+    semantic_type_hints:
+      - birth_date
+      - age
+      - gender
+
+  Behavioral Data:
+    keywords:
+      - click
+      - visit
+      - session
+      - page_view
+      - engagement
+      - frequency
+      - recency
+      - churn
+      - retention
+      - conversion
+      - bounce
+      - dwell
+      - scroll
+      - impression
+      - interaction_count
+    semantic_type_hints: []
+
+  Operational Data:
+    keywords:
+      - status
+      - state
+      - stage
+      - queue
+      - batch
+      - process
+      - workflow
+      - pipeline
+      - system
+      - error
+      - retry
+      - latency
+      - throughput
+      - uptime
+      - incident
+    semantic_type_hints: []
+
+  Interaction Data:
+    keywords:
+      - call
+      - email
+      - chat
+      - ticket
+      - support
+      - feedback
+      - complaint
+      - survey
+      - nps
+      - csat
+      - contact
+      - response
+      - resolution
+      - escalation
+    semantic_type_hints:
+      - satisfaction
+      - nps
+      - loyalty
+      - rating
+
+  Master Data:
+    keywords:
+      - customer_id
+      - employee_id
+      - product_id
+      - account_id
+      - merchant_id
+      - vendor_id
+      - name
+      - title
+      - department
+      - position
+      - segment
+      - tier
+      - category
+      - code
+      - sku
+      - reference
+    semantic_type_hints:
+      - identifier
+      - customer_identifier
+      - employee_identifier
+
+  Time Series Data:
+    keywords:
+      - date
+      - time
+      - timestamp
+      - period
+      - month
+      - quarter
+      - year
+      - week
+      - day
+      - hour
+      - minute
+    semantic_type_hints: []
+    # Also matched by high datetime_parse_ratio
+
+  Geographic Data:
+    keywords:
+      - country
+      - region
+      - state
+      - city
+      - zip
+      - postal
+      - address
+      - location
+      - lat
+      - lon
+      - geo
+      - branch
+      - office
+      - territory
+      - zone
+      - district
+    semantic_type_hints:
+      - country
+      - region
+      - city
+      - geographic
+      - state_province
+
+  Risk Data:
+    keywords:
+      - risk
+      - fraud
+      - score
+      - alert
+      - suspicious
+      - flag
+      - violation
+      - compliance
+      - penalty
+      - aml
+      - kyc
+      - sanction
+      - watchlist
+    semantic_type_hints:
+      - fraud
+      - risk
+      - risk_indicator
+
+  Customer Experience Data:
+    keywords:
+      - satisfaction
+      - nps
+      - csat
+      - rating
+      - review
+      - loyalty
+      - points
+      - reward
+      - tier
+      - membership
+      - retention
+      - churn
+      - lifetime_value
+      - ltv
+    semantic_type_hints:
+      - satisfaction
+      - nps
+      - loyalty
+      - rating
+
+# Domain context boosts — when a primary domain is set, certain categories get a score boost
+domain_boosts:
+  Payments:
+    strong: [Transaction Data]
+    weak: [Financial Data, Risk Data]
+  Finance:
+    strong: [Financial Data]
+    weak: [Transaction Data, Time Series Data]
+  Customer:
+    strong: [Customer Experience Data]
+    weak: [Demographic Data, Behavioral Data]
+  HR:
+    strong: [Master Data]
+    weak: [Demographic Data, Operational Data]

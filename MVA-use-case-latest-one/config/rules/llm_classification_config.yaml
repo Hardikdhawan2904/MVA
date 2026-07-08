@@ -1,0 +1,93 @@
+# LLM Classification Configuration
+# Controls when and how the LLM is used for classification fallback
+version: 1
+
+# Global toggle — set to false to disable all LLM classification fallbacks
+enabled: true
+
+# Batch size for LLM calls (columns sent per request)
+batch_size: 20
+
+# Temperature for classification (low = more deterministic)
+temperature: 0.1
+
+# Max tokens per LLM response
+max_tokens: 2000
+
+# Timeout per LLM call (seconds)
+timeout_seconds: 30
+
+# Retry policy
+max_retries: 2
+
+# Which classification layers use LLM fallback
+layers:
+  type_refinement:
+    enabled: true
+    # Only ask LLM when deterministic confidence is below this
+    confidence_threshold: 0.75
+    # What info to send to LLM
+    context_fields:
+      - column_name
+      - sample_values
+      - statistics_summary
+      - dominant_patterns
+
+  semantic_role:
+    enabled: true
+    confidence_threshold: 0.70
+    context_fields:
+      - column_name
+      - refined_type
+      - cardinality_ratio
+      - sample_values
+      - statistics_summary
+
+  data_category:
+    enabled: true
+    confidence_threshold: 0.65
+    context_fields:
+      - column_name
+      - semantic_type
+      - column_role
+      - primary_domain
+      - sample_values
+
+# Allowed output values (constrains LLM responses)
+allowed_types:
+  - integer
+  - decimal
+  - boolean
+  - date
+  - datetime
+  - categorical
+  - text
+  - identifier
+  - email
+  - phone
+  - currency_code
+  - country_code
+  - percentage
+  - unknown
+
+allowed_roles:
+  - metric
+  - dimension
+  - identifier
+  - temporal_dimension
+  - text_field
+  - flag
+  - unknown
+
+allowed_categories:
+  - Demographic Data
+  - Transaction Data
+  - Financial Data
+  - Behavioral Data
+  - Operational Data
+  - Interaction Data
+  - Master Data
+  - Time Series Data
+  - Geographic Data
+  - Risk Data
+  - Customer Experience Data

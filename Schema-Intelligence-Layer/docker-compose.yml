@@ -1,0 +1,8 @@
+# Postgres for this project now runs from the shared server used by all agents:
+#   C:\Users\dhawa\mva\Shared-Postgres\docker-compose.yml  (docker compose up -d)
+#
+# It hosts the single `mva_pipeline` database on port 5433, with this project's
+# tables isolated in the `agent1` schema (same credentials this project always
+# used, postgres/postgres) — no config changes needed here. Do not
+# `docker compose up` in this directory anymore; it would try to bind the same
+# port 5433 and conflict with the shared server.

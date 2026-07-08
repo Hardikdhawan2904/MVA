@@ -1,0 +1,34 @@
+# Application-level configuration
+version: 1
+
+pipeline:
+  version: "1.0.0"
+
+thresholds:
+  secondary_domain:
+    classified: 0.75
+    needs_review: 0.50
+
+  readiness:
+    ready: 80.0
+    partially_ready: 60.0
+
+  hierarchy:
+    accepted_consistency: 0.98
+    warning_consistency: 0.90
+    min_mapping_coverage: 0.90
+    identifier_cardinality: 0.98
+
+  file_limits:
+    max_upload_size_mb: 25
+    max_dataset_rows: 200000
+    max_dataset_columns: 200
+    processing_timeout_seconds: 120
+
+  drill_down:
+    min_cube_group_size: 5
+    max_drill_down_levels: 5
+
+  samples:
+    max_sample_values: 10
+    max_conflict_samples: 5

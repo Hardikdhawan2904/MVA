@@ -1,0 +1,182 @@
+# Type Detection Rules
+# Maps column values/patterns to refined data types
+# The engine checks these rules in order — first match wins
+version: 1
+
+# Confidence threshold: below this, ask LLM to classify
+llm_fallback_threshold: 0.75
+
+types:
+  boolean:
+    parse_ratio_field: boolean_parse_ratio
+    min_parse_ratio: 0.95
+    max_distinct_count: 3
+    # Also matches numeric 0/1 columns
+    numeric_binary:
+      min_numeric_ratio: 0.95
+      max_distinct_count: 2
+      min_value: 0
+      max_value: 1
+
+  datetime:
+    parse_ratio_field: datetime_parse_ratio
+    min_parse_ratio: 0.90
+    # Sub-types detected by pattern
+    date_only_patterns: ["YYYY-MM-DD", "DATE_SLASH", "MM/DD/YYYY"]
+
+  email:
+    patterns: ["EMAIL"]
+    regex: "^[\\w.+-]+@[\\w-]+\\.[\\w.]+$"
+    min_match_ratio: 0.80
+
+  phone:
+    patterns: ["PHONE"]
+    regex: "^\\+?\\d[\\d\\s\\-\\(\\)]{7,}$"
+    min_match_ratio: 0.80
+
+  currency_code:
+    patterns: ["THREE_LETTER_CODE"]
+    max_distinct_count: 50
+    min_match_ratio: 0.70
+    known_values:
+      - USD
+      - EUR
+      - GBP
+      - JPY
+      - INR
+      - AUD
+      - CAD
+      - CHF
+      - CNY
+      - HKD
+      - NZD
+      - SEK
+      - KRW
+      - SGD
+      - NOK
+      - MXN
+      - BRL
+      - ZAR
+      - DKK
+      - PLN
+      - THB
+      - IDR
+      - HUF
+      - CZK
+      - ILS
+      - CLP
+      - PHP
+      - AED
+      - COP
+      - SAR
+      - MYR
+      - RON
+      - TRY
+      - TWD
+      - ARS
+      - VND
+      - EGP
+      - NGN
+      - PKR
+      - BDT
+
+  country_code:
+    max_distinct_count: 250
+    min_match_ratio: 0.70
+    two_letter:
+      patterns: ["TWO_LETTER_CODE"]
+      known_values:
+        - US
+        - GB
+        - DE
+        - FR
+        - JP
+        - IN
+        - AU
+        - CA
+        - CH
+        - CN
+        - BR
+        - MX
+        - ZA
+        - KR
+        - SG
+        - NZ
+        - SE
+        - NO
+        - DK
+        - NL
+        - IT
+        - ES
+        - PT
+        - BE
+        - AT
+        - IE
+        - FI
+        - PL
+        - CZ
+        - HU
+        - RO
+        - GR
+        - TR
+        - RU
+        - AE
+        - SA
+        - EG
+        - NG
+        - KE
+        - IL
+    three_letter:
+      patterns: ["THREE_LETTER_CODE"]
+      known_values:
+        - USA
+        - GBR
+        - DEU
+        - FRA
+        - JPN
+        - IND
+        - AUS
+        - CAN
+        - CHE
+        - CHN
+        - BRA
+        - MEX
+        - ZAF
+        - KOR
+        - SGP
+        - NZL
+        - SWE
+        - NOR
+        - DNK
+        - NLD
+
+  percentage:
+    min_numeric_ratio: 0.90
+    value_range: [0, 100]
+    name_hints: [pct, percent, ratio, rate, proportion]
+
+  integer:
+    min_numeric_ratio: 0.90
+    patterns: ["INTEGER"]
+    # Detected when all values have no fractional part
+
+  decimal:
+    min_numeric_ratio: 0.90
+    # Default numeric when not integer
+
+  identifier:
+    min_cardinality_ratio: 0.98
+    min_row_count: 10
+    patterns: ["UUID"]
+
+  categorical:
+    max_cardinality_ratio: 0.05
+    max_distinct_count: 50
+    # Or absolute low distinct with enough rows
+    alternate:
+      max_distinct_count: 20
+      min_row_count: 50
+
+  text:
+    # Default fallback for non-null string columns
+    fallback: true

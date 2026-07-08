@@ -1,0 +1,213 @@
+# Semantic Role Classification Rules
+# Maps column characteristics to semantic roles (metric, dimension, temporal, etc.)
+# Keywords are checked against normalized column names
+version: 1
+
+# Confidence threshold: below this, ask LLM to classify
+llm_fallback_threshold: 0.70
+
+roles:
+  metric:
+    description: "Numeric columns representing measurable values"
+    keywords:
+      - amount
+      - amt
+      - price
+      - revenue
+      - cost
+      - total
+      - balance
+      - sum
+      - fee
+      - charge
+      - salary
+      - compensation
+      - pay
+      - income
+      - expense
+      - profit
+      - loss
+      - value
+      - quantity
+      - qty
+      - count
+      - volume
+      - weight
+      - score
+      - rate
+      - ratio
+      - bonus
+      - discount
+      - tax
+      - budget
+      - forecast
+      - actual
+      - variance
+      - margin
+      - commission
+      - interest
+      - deposit
+      - withdrawal
+    # Sub-types for more specific semantic type assignment
+    sub_types:
+      monetary_amount:
+        keywords: [amount, amt, price, revenue, cost, fee, charge, salary, income, expense, profit, balance, commission, interest, deposit, withdrawal]
+      count_metric:
+        keywords: [count, qty, quantity, volume, num_items, total_items]
+      score:
+        keywords: [score, rating, nps, csat]
+      rate:
+        keywords: [rate, ratio, percentage, pct]
+      measurement:
+        keywords: [weight, height, distance, duration, size]
+
+  temporal_dimension:
+    description: "Date/time columns used as time axis"
+    keywords:
+      - date
+      - time
+      - timestamp
+      - datetime
+      - created
+      - updated
+      - modified
+      - start
+      - end
+      - due
+      - expire
+      - birth
+      - hire
+      - effective
+      - posted
+      - processed
+      - settled
+      - authorized
+      - cleared
+      - closed
+      - opened
+      - submitted
+      - approved
+      - rejected
+    suffix_patterns: ["_at", "_dt", "_date", "_time", "_ts"]
+    # Sub-types for specific date semantics
+    sub_types:
+      creation_date:
+        keywords: [created, create, creation]
+      modification_date:
+        keywords: [updated, update, modified, modification]
+      birth_date:
+        keywords: [birth, dob, born]
+      hire_date:
+        keywords: [hire, hired, joining]
+      settlement_date:
+        keywords: [settle, settlement, settled]
+      authorization_date:
+        keywords: [auth, authorization, authorized]
+      expiration_date:
+        keywords: [expire, expiration, expiry]
+      start_date:
+        keywords: [start, begin, from]
+      end_date:
+        keywords: [end, finish, until, to]
+
+  dimension:
+    description: "Categorical columns used for grouping/filtering"
+    keywords:
+      - status
+      - state
+      - flag
+      - type
+      - category
+      - class
+      - kind
+      - level
+      - tier
+      - grade
+      - priority
+      - severity
+      - outcome
+      - result
+      - decision
+      - stage
+      - channel
+      - method
+      - mode
+      - source
+      - segment
+      - group
+      - brand
+      - vendor
+      - supplier
+    # Sub-types
+    sub_types:
+      status:
+        keywords: [status, state, outcome, result, decision]
+      category:
+        keywords: [type, category, class, kind, group]
+      tier:
+        keywords: [tier, level, grade, priority, severity]
+      geographic:
+        keywords: [country, region, state, city, zip, postal, address, location, province, county, district, branch, office]
+
+  identifier:
+    description: "Unique key columns that identify rows"
+    # Detected primarily by cardinality, not name
+    # Name hints are supporting evidence only
+    name_hints:
+      suffix: ["_id", "_key", "_uuid", "_guid", "_code", "_number", "_num", "_no", "_ref"]
+      exact: [id, key, uuid, guid, code, number]
+
+  text_field:
+    description: "Free-text or descriptive columns"
+    keywords:
+      - desc
+      - description
+      - note
+      - comment
+      - remark
+      - reason
+      - message
+      - text
+      - body
+      - summary
+      - details
+      - explanation
+      - feedback
+      - review
+
+  flag:
+    description: "Boolean/binary indicator columns"
+    keywords:
+      - flag
+      - is_
+      - has_
+      - active
+      - enabled
+      - deleted
+      - removed
+      - verified
+      - confirmed
+      - blocked
+      - suspended
+
+# Geographic patterns (dimension sub-type)
+geographic_keywords:
+  - country
+  - region
+  - state
+  - city
+  - zip
+  - postal
+  - address
+  - location
+  - latitude
+  - longitude
+  - lat
+  - lng
+  - lon
+  - geo
+  - province
+  - county
+  - district
+  - branch
+  - office
