@@ -52,7 +52,7 @@ Schema_Intelligence_layer/
     *   `/datasets` (GET): Queries PostgreSQL to list all cataloged metadata records.
     *   `/datasets/{dataset_id}` (GET): Fetches the full metadata catalog record.
     *   `/datasets/{dataset_id}/dataframe` (GET): Retrieves the loaded DataFrame from the memory registry cache, returning row lists as JSON.
-*   **[app/services/quality_validator.py](app/services/quality_validator.py)**: Executes the core weighted scoring and quality checks. It reads configuration parameters from `config/quality_threshold.json`, extracts the head 10 and tail 10 rows of the dataset to avoid scanning massive datasets in full, and runs 10 independent checks: Column Count, Missing Values, Duplicate Columns, Duplicate Rows, Empty Columns, Datatype Consistency, Corrupted Values, Null-Heavy Rows, Cell Length Outliers, and Mixed formats.
+*   **[app/services/quality_validator.py](app/services/quality_validator.py)**: Executes the core weighted scoring and quality checks. It reads configuration parameters from `config/quality_threshold.json` and runs 10 independent checks against the **entire uploaded dataset** — Column Count, Missing Values, Duplicate Columns, Duplicate Rows, Empty Columns, Datatype Consistency, Corrupted Values, Null-Heavy Rows, Cell Length Outliers, and Mixed Formats. All 10 checks are implemented with vectorized pandas operations (no Python-level row loops), so scanning the full dataset is fast regardless of size — earlier versions sampled only the first/last 10 rows to keep this gate fast, which is no longer necessary now that the checks themselves are fast.
 *   **[app/services/validator.py](app/services/validator.py)**: Performs basic structural checks on uploaded files, verifying file types (CSV, XLS, XLSX, TSV) and verifying that the loaded Pandas DataFrame is non-empty and well-formed.
 *   **[app/services/loader.py](app/services/loader.py)**: Acts as the tabular file reader, using proper Pandas engines (CSV engines or Openpyxl for Excel sheets) to parse data streams into in-memory DataFrames while handling encoding configurations and header alignments.
 *   **[app/services/metadata_extractor.py](app/services/metadata_extractor.py)**: Extracts technical structural parameters. Calculates row counts, column counts, lists column names, extracts column Pandas data types (mapping them to serializable string names), and slices a clean JSON-safe data sample of the dataset.
@@ -85,14 +85,9 @@ Below is the execution flow diagram of the ingestion pipeline.
                                   │
                                   ▼
                   ┌───────────────────────────────┐
-                  │ 4. Extract Quality Sample     │
-                  │   (First 10 & Last 10 Rows)   │
-                  └───────────────┬───────────────┘
-                                  │
-                                  ▼
-                  ┌───────────────────────────────┐
-                  │ 5. Execute 10 Quality Checks  │
-                  │    (quality_validator.py)     │
+                  │ 4. Execute 10 Quality Checks  │
+                  │  on the full dataset (vector- │
+                  │  ized, quality_validator.py)  │
                   └───────────────┬───────────────┘
                                   │
                                   ▼

@@ -1,6 +1,6 @@
 """
 Data Quality Validation Service.
-Executes configured quality checks on a sample of the dataset.
+Executes configured quality checks on the full dataset using vectorized pandas operations.
 """
 
 import os
@@ -146,29 +146,25 @@ class DatatypeConsistencyCheck(BaseQualityCheck):
     ) -> Tuple[float, Optional[str]]:
         if len(df_sample.columns) == 0:
             return weight, None
-        
+
         col_consistencies = []
         for col in df_sample.columns:
             non_null = df_sample[col].dropna()
-            if non_null.empty:
+            n = len(non_null)
+            if n == 0:
                 col_consistencies.append(1.0)
                 continue
-            
-            # Categorize python basic groups
-            type_groups = []
-            for val in non_null:
-                if isinstance(val, bool):
-                    type_groups.append("bool")
-                elif isinstance(val, (int, float)):
-                    type_groups.append("numeric")
-                elif isinstance(val, (pd.Timestamp, datetime)):
-                    type_groups.append("datetime")
-                else:
-                    type_groups.append("string")
-            
-            dominant_count = max(type_groups.count(t) for t in set(type_groups))
-            col_consistencies.append(dominant_count / len(type_groups))
-            
+
+            # Vectorized type-group masks (bool checked first — bool is a subtype of int,
+            # so it must be excluded from the numeric mask explicitly)
+            is_bool = non_null.map(lambda v: isinstance(v, bool))
+            is_numeric = non_null.map(lambda v: isinstance(v, (int, float))) & ~is_bool
+            is_datetime = non_null.map(lambda v: isinstance(v, (pd.Timestamp, datetime)))
+            is_string = ~(is_bool | is_numeric | is_datetime)
+
+            dominant_count = max(is_bool.sum(), is_numeric.sum(), is_datetime.sum(), is_string.sum())
+            col_consistencies.append(dominant_count / n)
+
         overall_consistency = np.mean(col_consistencies) if col_consistencies else 1.0
         achieved_score = weight * overall_consistency
         
@@ -188,18 +184,18 @@ class CorruptedValuesCheck(BaseQualityCheck):
         if df_sample.size == 0:
             return weight, None
         
-        placeholders = [p.lower() for p in limits.get("corrupted_placeholders", [])]
+        placeholders = set(p.lower() for p in limits.get("corrupted_placeholders", []))
         corrupted_count = 0
         total_valid = 0
-        
+
         for col in df_sample.columns:
-            for val in df_sample[col]:
-                if pd.notna(val):
-                    total_valid += 1
-                    val_str = str(val).strip().lower()
-                    if val_str in placeholders:
-                        corrupted_count += 1
-                        
+            non_null = df_sample[col].dropna()
+            total_valid += len(non_null)
+            if len(non_null) == 0:
+                continue
+            normalized = non_null.astype(str).str.strip().str.lower()
+            corrupted_count += int(normalized.isin(placeholders).sum())
+
         if total_valid == 0:
             return weight, None
             
@@ -223,13 +219,11 @@ class NullHeavyRowsCheck(BaseQualityCheck):
             return weight, None
             
         threshold = limits.get("null_heavy_row_pct_threshold", 50.0)
-        null_heavy_count = 0
-        
-        for _, row in df_sample.iterrows():
-            row_null_pct = row.isna().mean() * 100
-            if row_null_pct > threshold:
-                null_heavy_count += 1
-                
+
+        # Vectorized: null percentage for every row in one call, instead of iterrows()
+        row_null_pcts = df_sample.isna().mean(axis=1) * 100
+        null_heavy_count = int((row_null_pcts > threshold).sum())
+
         pct_null_heavy = (null_heavy_count / len(df_sample)) * 100
         achieved_score = weight * (1.0 - (null_heavy_count / len(df_sample)))
         
@@ -251,21 +245,25 @@ class CellLengthOutliersCheck(BaseQualityCheck):
             
         outliers_count = 0
         total_strings = 0
-        
+
         for col in df_sample.columns:
             non_null = df_sample[col].dropna()
-            lengths = [len(str(val)) for val in non_null if isinstance(val, str)]
-            if len(lengths) < 3:
+            if len(non_null) == 0:
                 continue
-                
+            str_mask = non_null.map(lambda v: isinstance(v, str))
+            strings = non_null[str_mask]
+            if len(strings) < 3:
+                continue
+
+            lengths = strings.astype(str).str.len()
             total_strings += len(lengths)
-            mean_len = np.mean(lengths)
-            std_len = np.std(lengths)
-            
+            mean_len = lengths.mean()
+            std_len = lengths.std(ddof=0)  # match np.std()'s default (population, not sample)
+
             if std_len > 0:
-                # Count lengths outside 3 standard deviations
-                outliers_count += sum(abs(l - mean_len) > 3 * std_len for l in lengths)
-                
+                # Count lengths outside 3 standard deviations — fully vectorized
+                outliers_count += int(((lengths - mean_len).abs() > 3 * std_len).sum())
+
         if total_strings == 0:
             return weight, None
             
@@ -291,22 +289,21 @@ class MixedFormatsCheck(BaseQualityCheck):
         casing_consistencies = []
         for col in df_sample.columns:
             non_null = df_sample[col].dropna()
-            strings = [str(x) for x in non_null if isinstance(x, str) and x.strip() != ""]
-            if not strings:
+            str_mask = non_null.map(lambda v: isinstance(v, str) and v.strip() != "")
+            strings = non_null[str_mask].astype(str)
+            if len(strings) == 0:
                 continue
-                
-            casing_types = []
-            for s in strings:
-                if s.isupper():
-                    casing_types.append("UPPER")
-                elif s.islower():
-                    casing_types.append("lower")
-                elif s.istitle():
-                    casing_types.append("Title")
-                else:
-                    casing_types.append("Mixed")
-                    
-            majority_count = max(casing_types.count(c) for c in set(casing_types))
+
+            # Vectorized pandas string-accessor methods, applied with the same priority
+            # order as the original if/elif chain so categories stay mutually exclusive
+            # (e.g. a single letter like "A" is both .isupper() and .istitle() — it must
+            # only ever count once, under whichever category is checked first).
+            is_upper = strings.str.isupper()
+            is_lower = ~is_upper & strings.str.islower()
+            is_title = ~is_upper & ~is_lower & strings.str.istitle()
+            is_mixed = ~(is_upper | is_lower | is_title)
+
+            majority_count = max(is_upper.sum(), is_lower.sum(), is_title.sum(), is_mixed.sum())
             casing_consistencies.append(majority_count / len(strings))
             
         overall_consistency = np.mean(casing_consistencies) if casing_consistencies else 1.0
@@ -358,7 +355,6 @@ class DataQualityValidator:
     def _get_fallback_config(self) -> Dict[str, Any]:
         """Provide fallback configuration if config file reading fails."""
         return {
-            "sampling": {"first_rows": 10, "last_rows": 10},
             "passing_score": 75,
             "weights": {
                 "column_count": 15,
@@ -389,27 +385,18 @@ class DataQualityValidator:
 
     def run_validation(self, df: pd.DataFrame) -> Dict[str, Any]:
         """
-        Run all configured validation checks on a head and tail sample.
-        
+        Run all configured validation checks on the full dataset.
+
         Args:
             df: The complete input DataFrame to validate.
             
         Returns:
             A structured dict matching the QualityReport output schema.
         """
-        # Determine sampling settings
-        sampling = self.config.get("sampling", {})
-        first_rows = sampling.get("first_rows", 10)
-        last_rows = sampling.get("last_rows", 10)
-        
-        # Extract sample without scanning full dataset (take head/tail only)
-        total_rows = len(df)
-        if total_rows <= (first_rows + last_rows):
-            df_sample = df
-        else:
-            # Take first N and last N rows directly
-            df_sample = pd.concat([df.head(first_rows), df.tail(last_rows)])
-            
+        # All 10 checks are vectorized pandas operations, so scanning the full dataset
+        # is cheap regardless of size — no need to sample only the head/tail anymore.
+        df_sample = df
+
         # Execute checks
         weights = self.config.get("weights", {})
         limits = self.config.get("limits", {})

@@ -1,8 +1,4 @@
 {
-    "sampling": {
-        "first_rows": 10,
-        "last_rows": 10
-    },
     "passing_score": 75,
     "weights": {
         "column_count": 15,
