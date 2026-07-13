@@ -1,6 +1,5 @@
 """Tests for Schema Intelligence interface and local provider."""
 
-import json
 import pytest
 
 from app.core.enums import SchemaIntelligenceDecision
@@ -9,9 +8,7 @@ from app.services.llm.provider import MockLLMProvider
 from app.services.schema_intelligence.local_provider import LocalSchemaIntelligenceProvider
 from app.services.schema_intelligence.models import (
     ColumnAnalysisInput,
-    ColumnAnalysisResult,
     DomainContext,
-    SchemaIntelligenceResult,
 )
 
 

@@ -8,7 +8,7 @@ from app.core.enums import RuleType, RuleSource, RuleSuggestionStatus
 from app.core.exceptions import InvalidRuleTransitionError
 from app.repositories.configuration_repository import ConfigurationRepository
 from app.services.rules.rule_loader import RuleLoader, RuleDefinition
-from app.services.rules.rule_engine import RuleEngine, RuleEvaluationResult
+from app.services.rules.rule_engine import RuleEngine
 from app.services.rules.approval_service import ApprovalService
 from app.services.rules.suggestion_generator import SuggestedRule
 

@@ -9,7 +9,7 @@ import logging
 import numpy as np
 import pandas as pd
 from datetime import datetime
-from typing import Optional, Union, Tuple, Dict, Any, List
+from typing import Optional, Tuple, Dict, Any, List
 
 logger = logging.getLogger(__name__)
 
@@ -63,15 +63,32 @@ class MissingValuesCheck(BaseQualityCheck):
             return weight, None
         total_missing = df_sample.isna().sum().sum()
         pct_missing = (total_missing / df_sample.size) * 100
-        
+
+        # A dataset-wide average can hide a single near-empty column (e.g. 95% missing)
+        # when the rest of the dataset is clean — EmptyColumnsCheck only catches columns
+        # that are 100% missing. Score off whichever is worse: the overall average, or
+        # the single worst column.
+        per_column_pct_missing = df_sample.isna().mean() * 100
+        worst_col_pct = per_column_pct_missing.max() if len(per_column_pct_missing) else 0.0
+        effective_pct = max(pct_missing, worst_col_pct)
+
         # Linear score deduction based on missing cells
-        achieved_score = weight * (1.0 - (pct_missing / 100.0))
-        
-        warning = None
+        achieved_score = weight * (1.0 - (effective_pct / 100.0))
+
+        warnings = []
         max_allowed = limits.get("max_missing_values_pct", 20.0)
         if pct_missing > max_allowed:
-            warning = f"Missing values density ({pct_missing:.1f}%) exceeds threshold of {max_allowed}%."
-            
+            warnings.append(f"Missing values density ({pct_missing:.1f}%) exceeds threshold of {max_allowed}%.")
+
+        max_single_col_allowed = limits.get("max_single_column_missing_pct", 50.0)
+        if worst_col_pct > max_single_col_allowed:
+            worst_col_name = per_column_pct_missing.idxmax()
+            warnings.append(
+                f"Column '{worst_col_name}' is {worst_col_pct:.1f}% missing, "
+                f"exceeding the per-column threshold of {max_single_col_allowed}%."
+            )
+
+        warning = " ".join(warnings) if warnings else None
         return max(0.0, achieved_score), warning
 
 
@@ -160,6 +177,38 @@ class DatatypeConsistencyCheck(BaseQualityCheck):
             is_bool = non_null.map(lambda v: isinstance(v, bool))
             is_numeric = non_null.map(lambda v: isinstance(v, (int, float))) & ~is_bool
             is_datetime = non_null.map(lambda v: isinstance(v, (pd.Timestamp, datetime)))
+            is_native_typed = is_bool | is_numeric | is_datetime
+
+            # CSV-sourced mixed columns never carry native int/float/bool/datetime values —
+            # pandas keeps every cell in an object-dtype CSV column as plain str, even
+            # numeric-looking ones ("123"), so without this pass they'd all fall into
+            # is_string and a column mixing "123"/"456" with "abc"/"xyz" would score as
+            # 100% consistent. Classify the remaining plain strings by apparent type instead.
+            remaining = non_null[~is_native_typed]
+            is_numeric_str = pd.Series(False, index=non_null.index)
+            is_bool_str = pd.Series(False, index=non_null.index)
+            is_datetime_str = pd.Series(False, index=non_null.index)
+            if len(remaining) > 0:
+                str_vals = remaining.astype(str).str.strip()
+
+                numeric_coerced = pd.to_numeric(str_vals, errors="coerce")
+                is_numeric_str.loc[remaining.index] = numeric_coerced.notna()
+
+                not_numeric_idx = remaining.index[~is_numeric_str.loc[remaining.index]]
+                if len(not_numeric_idx) > 0:
+                    bool_match = str_vals.loc[not_numeric_idx].str.lower().isin(["true", "false"])
+                    is_bool_str.loc[not_numeric_idx] = bool_match
+
+                    leftover_idx = not_numeric_idx[~bool_match]
+                    if len(leftover_idx) > 0:
+                        datetime_coerced = pd.to_datetime(
+                            str_vals.loc[leftover_idx], errors="coerce", format="mixed"
+                        )
+                        is_datetime_str.loc[leftover_idx] = datetime_coerced.notna()
+
+            is_bool = is_bool | is_bool_str
+            is_numeric = is_numeric | is_numeric_str
+            is_datetime = is_datetime | is_datetime_str
             is_string = ~(is_bool | is_numeric | is_datetime)
 
             dominant_count = max(is_bool.sum(), is_numeric.sum(), is_datetime.sum(), is_string.sum())
@@ -235,6 +284,19 @@ class NullHeavyRowsCheck(BaseQualityCheck):
         return max(0.0, achieved_score), warning
 
 
+def _is_free_text_column(strings: pd.Series, limits: Dict[str, Any]) -> bool:
+    """Detects genuine free-text columns (notes, descriptions, addresses) where
+    length variance and inconsistent casing are normal, not a data-quality defect —
+    so CellLengthOutliersCheck / MixedFormatsCheck don't penalize them."""
+    if len(strings) == 0:
+        return False
+    avg_words = strings.str.split().str.len().mean()
+    avg_length = strings.str.len().mean()
+    min_avg_words = limits.get("free_text_min_avg_words", 4)
+    min_avg_length = limits.get("free_text_min_avg_length", 40)
+    return avg_words >= min_avg_words or avg_length >= min_avg_length
+
+
 # 9. Cell Length Outliers Check
 class CellLengthOutliersCheck(BaseQualityCheck):
     def validate(
@@ -253,6 +315,9 @@ class CellLengthOutliersCheck(BaseQualityCheck):
             str_mask = non_null.map(lambda v: isinstance(v, str))
             strings = non_null[str_mask]
             if len(strings) < 3:
+                continue
+
+            if _is_free_text_column(strings, limits):
                 continue
 
             lengths = strings.astype(str).str.len()
@@ -292,6 +357,9 @@ class MixedFormatsCheck(BaseQualityCheck):
             str_mask = non_null.map(lambda v: isinstance(v, str) and v.strip() != "")
             strings = non_null[str_mask].astype(str)
             if len(strings) == 0:
+                continue
+
+            if _is_free_text_column(strings, limits):
                 continue
 
             # Vectorized pandas string-accessor methods, applied with the same priority
@@ -371,6 +439,7 @@ class DataQualityValidator:
             "limits": {
                 "min_columns": 1,
                 "max_missing_values_pct": 20.0,
+                "max_single_column_missing_pct": 50.0,
                 "max_duplicate_rows_pct": 10.0,
                 "max_empty_columns_pct": 10.0,
                 "min_datatype_consistency_pct": 80.0,
@@ -380,6 +449,8 @@ class DataQualityValidator:
                 "max_mixed_formats_pct": 10.0,
                 "null_heavy_row_pct_threshold": 50.0,
                 "corrupted_placeholders": ["?", "n/a", "na", "null", "none", "undefined", "NaN"],
+                "free_text_min_avg_words": 4,
+                "free_text_min_avg_length": 40,
             },
         }
 

@@ -1,7 +1,5 @@
 """Authentication middleware — supports API key and JWT."""
 
-from typing import Annotated
-
 from fastapi import Depends, HTTPException, Security, status
 from fastapi.security import APIKeyHeader, HTTPBearer, HTTPAuthorizationCredentials
 

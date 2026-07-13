@@ -1,6 +1,5 @@
 """Database session management."""
 
-from collections.abc import Generator
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -22,12 +21,3 @@ def create_session_factory(settings: Settings) -> sessionmaker[Session]:
     """Create a session factory bound to the configured engine."""
     engine = create_db_engine(settings)
     return sessionmaker(bind=engine, autocommit=False, autoflush=False)
-
-
-def get_db_session(session_factory: sessionmaker[Session]) -> Generator[Session, None, None]:
-    """Yield a database session and ensure cleanup."""
-    session = session_factory()
-    try:
-        yield session
-    finally:
-        session.close()

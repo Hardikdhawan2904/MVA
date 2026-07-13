@@ -4,7 +4,7 @@ import re
 from typing import Any
 
 from app.core.constants import IDENTIFIER_CARDINALITY_THRESHOLD
-from app.core.enums import RefinedDataType, ColumnRole
+from app.core.enums import RefinedDataType
 from app.services.profiling.column_profiler import ColumnProfileResult
 
 
@@ -154,6 +154,33 @@ class IdentifierDetector:
             evidence.append({
                 "signal": "low_cardinality_disqualifies",
                 "value": round(profile.cardinality_ratio, 4),
+            })
+
+        # Continuous decimal values are essentially never real identifiers —
+        # financial amounts, rates, and measurements naturally land close to 100%
+        # unique without being an identifier, so cardinality/duplicate behavior
+        # alone can't tell the two apart. Real identifiers are virtually always
+        # integer/string/UUID; require a supporting name hint for decimals.
+        if refined_type == RefinedDataType.DECIMAL and not _ID_NAME_PATTERNS.search(profile.normalized_key):
+            score -= 0.40
+            evidence.append({
+                "signal": "decimal_without_id_name_penalty",
+                "value": profile.pandas_dtype,
+            })
+
+        # Same reasoning applies to long free-text values (commentary/narrative
+        # fields) — every row happening to be a unique sentence doesn't make it
+        # an identifier. A genuine ID/code is short (same 40-char threshold used
+        # in TypeRefiner's identifier check).
+        if (
+            profile.avg_string_length is not None
+            and profile.avg_string_length > 40
+            and not _ID_NAME_PATTERNS.search(profile.normalized_key)
+        ):
+            score -= 0.40
+            evidence.append({
+                "signal": "long_text_without_id_name_penalty",
+                "value": round(profile.avg_string_length, 1),
             })
 
         # Cap score to [0, 1]

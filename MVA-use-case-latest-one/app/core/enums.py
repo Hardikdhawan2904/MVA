@@ -180,14 +180,6 @@ class RuleSource(str, Enum):
     APPROVED_SUGGESTION = "approved_suggestion"
 
 
-class MandatorySource(str, Enum):
-    """Source of mandatory/expected-unique flag decision."""
-    REQUEST_OVERRIDE = "request_override"
-    DOMAIN_CONFIGURATION = "domain_configuration"
-    SCHEMA_INTELLIGENCE = "schema_intelligence"
-    UNSPECIFIED = "unspecified"
-
-
 class SchemaIntelligenceDecision(str, Enum):
     """Schema Intelligence decisions for semantic candidates."""
     CONFIRMED = "confirmed"

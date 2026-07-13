@@ -1,7 +1,6 @@
 """Local Schema Intelligence provider — uses LLM for semantic reasoning."""
 
 import json
-from typing import Any
 
 from app.core.logging import get_logger
 from app.core.enums import SchemaIntelligenceDecision

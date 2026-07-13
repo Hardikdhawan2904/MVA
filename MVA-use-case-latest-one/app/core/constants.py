@@ -22,6 +22,3 @@ MAX_CONFLICT_SAMPLES = 5
 
 # Supported file extensions
 SUPPORTED_EXTENSIONS = {".csv", ".xlsx"}
-
-# Column normalization
-COLUMN_NAME_SEPARATOR = "_"

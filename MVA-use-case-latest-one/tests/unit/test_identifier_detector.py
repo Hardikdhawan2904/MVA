@@ -4,7 +4,6 @@ import pytest
 import pandas as pd
 
 from app.core.config import Settings
-from app.core.enums import RefinedDataType
 from app.services.profiling.column_profiler import ColumnProfiler
 from app.services.profiling.type_refiner import TypeRefiner
 from app.services.profiling.identifier_detector import IdentifierDetector
@@ -121,6 +120,24 @@ class TestIdentifierDetector:
         result = detector.detect([profile], [refined_type])
         assert result.inferred_grain is not None
         assert "primary_key" in result.inferred_grain
+
+    def test_unique_long_commentary_not_identifier(
+        self, profiler: ColumnProfiler, refiner: TypeRefiner, detector: IdentifierDetector
+    ):
+        """A free-text commentary column where every row happens to be a unique
+        sentence should NOT become a grain key — high cardinality alone isn't
+        enough when the values are long narrative text, not short codes."""
+        values = [
+            f"Total Operating Income of ${17000 + i}K was ${1000 + i}K below budget, "
+            f"primarily driven by volume and rate variance in the reporting period."
+            for i in range(60)
+        ]
+        series = pd.Series(values)
+        profile = profiler.profile_column(series, "commentary_headline", "commentary_headline")
+        refined_type = refiner.refine(profile)
+
+        result = detector.detect([profile], [refined_type])
+        assert "commentary_headline" not in result.grain_columns
 
     def test_high_null_reduces_identifier_confidence(
         self, profiler: ColumnProfiler, refiner: TypeRefiner, detector: IdentifierDetector

@@ -2,15 +2,11 @@
 
 import pytest
 import pandas as pd
-import numpy as np
 
 from app.core.enums import HierarchyEdgeStatus, HierarchyChainStatus
-from app.services.hierarchy.functional_dependency import (
-    FunctionalDependencyValidator,
-    FDValidationResult,
-)
-from app.services.hierarchy.template_matcher import TemplateMatcher, TemplateMatchResult
-from app.services.hierarchy.chain_selector import ChainSelector, HierarchyChainResult
+from app.services.hierarchy.functional_dependency import FunctionalDependencyValidator
+from app.services.hierarchy.template_matcher import TemplateMatchResult
+from app.services.hierarchy.chain_selector import ChainSelector
 
 
 @pytest.fixture

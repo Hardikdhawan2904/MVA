@@ -5,11 +5,11 @@ import pandas as pd
 from pathlib import Path
 
 from app.core.config import Settings
-from app.core.enums import SecondaryDomainStatus, ColumnRole, RefinedDataType
+from app.core.enums import SecondaryDomainStatus
 from app.repositories.configuration_repository import ConfigurationRepository
 from app.services.domains.secondary_domain_classifier import SecondaryDomainClassifier
-from app.services.profiling.column_profiler import ColumnProfiler, ColumnProfileResult
-from app.services.profiling.semantic_candidate_generator import SemanticCandidate, SemanticCandidateGenerator
+from app.services.profiling.column_profiler import ColumnProfiler
+from app.services.profiling.semantic_candidate_generator import SemanticCandidateGenerator
 from app.services.profiling.type_refiner import TypeRefiner
 
 

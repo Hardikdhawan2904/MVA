@@ -8,7 +8,7 @@ from pydantic import BaseModel, ValidationError
 
 from app.core.config import Settings
 from app.core.logging import get_logger
-from app.services.llm.interface import LLMProvider, LLMRequest, LLMResponse
+from app.services.llm.interface import LLMRequest, LLMResponse
 
 logger = get_logger(__name__)
 

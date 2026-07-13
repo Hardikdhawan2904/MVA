@@ -22,3 +22,6 @@ httpx
 structlog
 groq
 python-dotenv
+langgraph
+langchain-groq
+langchain-core

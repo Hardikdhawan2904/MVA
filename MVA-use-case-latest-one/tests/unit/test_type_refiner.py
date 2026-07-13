@@ -129,3 +129,16 @@ class TestTypeRefiner:
         result = refiner.refine(profile)
         # Should be categorical, not identifier
         assert result == RefinedDataType.CATEGORICAL
+
+    def test_unique_long_commentary_not_identifier(self, profiler: ColumnProfiler, refiner: TypeRefiner):
+        """A free-text commentary column where every row happens to be a unique
+        sentence should NOT be an identifier — high cardinality alone isn't
+        enough when the values are long narrative text, not short codes."""
+        values = [
+            f"Total Operating Income of ${17000 + i}K was ${1000 + i}K below budget, "
+            f"primarily driven by volume and rate variance in the reporting period."
+            for i in range(60)
+        ]
+        profile = _profile(profiler, values, "commentary_headline")
+        result = refiner.refine(profile)
+        assert result != RefinedDataType.IDENTIFIER

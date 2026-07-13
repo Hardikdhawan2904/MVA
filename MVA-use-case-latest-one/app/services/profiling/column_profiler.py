@@ -272,8 +272,6 @@ class ColumnProfiler:
         if len(series) == 0:
             return []
 
-        import re
-
         sample = series.head(min(500, len(series))).astype(str)
         patterns: dict[str, int] = {}
 

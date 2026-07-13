@@ -52,6 +52,10 @@ class AggregationEngine:
                 agg = grouped.sum()
             elif chart.aggregation == "mean":
                 agg = grouped.mean()
+            elif chart.aggregation == "max":
+                agg = grouped.max()
+            elif chart.aggregation == "min":
+                agg = grouped.min()
             else:
                 agg = grouped.count()
         else:
@@ -79,6 +83,12 @@ class AggregationEngine:
             grouped = temp_df.groupby(temp_df["_time"].dt.to_period("M"))["_metric"]
             if chart.aggregation == "sum":
                 agg = grouped.sum()
+            elif chart.aggregation == "mean":
+                agg = grouped.mean()
+            elif chart.aggregation == "max":
+                agg = grouped.max()
+            elif chart.aggregation == "min":
+                agg = grouped.min()
             else:
                 agg = grouped.count()
         else:
@@ -102,6 +112,10 @@ class AggregationEngine:
             value = float(numeric.mean())
         elif chart.aggregation == "count":
             value = float(numeric.count())
+        elif chart.aggregation == "max":
+            value = float(numeric.max())
+        elif chart.aggregation == "min":
+            value = float(numeric.min())
         else:
             value = float(numeric.sum())
 

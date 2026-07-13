@@ -1,7 +1,6 @@
 """Deterministic type refinement — refines pandas dtype to semantic physical types."""
 
 import re
-from typing import Any
 
 from app.core.enums import RefinedDataType
 from app.services.profiling.column_profiler import ColumnProfileResult
@@ -217,9 +216,15 @@ class TypeRefiner:
 
     def _is_identifier(self, profile: ColumnProfileResult) -> bool:
         """Check if column is likely an identifier (near-unique)."""
-        if profile.cardinality_ratio >= 0.98 and profile.non_null_count > 10:
-            return True
         if "UUID" in profile.dominant_patterns:
+            return True
+        # Long free-text values (commentary/narrative fields) are never real
+        # identifiers even when every row happens to be unique — a genuine
+        # ID/code is short. Guard the cardinality check with a length check
+        # (same 40-char threshold used for free-text detection elsewhere).
+        if profile.avg_string_length is not None and profile.avg_string_length > 40:
+            return False
+        if profile.cardinality_ratio >= 0.98 and profile.non_null_count > 10:
             return True
         return False
 

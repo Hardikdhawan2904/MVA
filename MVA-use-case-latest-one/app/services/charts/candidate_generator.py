@@ -113,7 +113,128 @@ class ChartCandidateGenerator:
         templates: list[dict[str, Any]],
         hierarchy_levels: list[str] | None,
     ) -> list[ChartSpec]:
-        """Generate business charts from domain templates."""
+        """Generate business charts — prefers domain-specific templates (matched
+        against required_roles), tops up with the generic rules below so coverage
+        never regresses below what those rules alone would produce (e.g. when a
+        domain has no templates, or this dataset's columns don't satisfy any)."""
+        charts: list[ChartSpec] = []
+
+        if templates:
+            charts.extend(self._resolve_templates(metrics, dimensions, temporals, templates, hierarchy_levels))
+
+        if len(charts) < self._target_business:
+            # Dedupe by what the chart actually shows, not just its key — a
+            # template chart and a generic-rule chart can independently arrive
+            # at the identical (chart_type, dimension, metric) combination
+            # (e.g. "transaction_value_over_time" vs. the generic "X_over_time"
+            # rule both plotting the same metric over the same temporal column).
+            seen_signatures = {(c.chart_type, c.dimension, c.metric) for c in charts}
+            for c in self._generate_generic_business_charts(metrics, dimensions, temporals, hierarchy_levels):
+                signature = (c.chart_type, c.dimension, c.metric)
+                if signature not in seen_signatures:
+                    charts.append(c)
+                    seen_signatures.add(signature)
+
+        return charts
+
+    def _resolve_templates(
+        self,
+        metrics: list[tuple],
+        dimensions: list[tuple],
+        temporals: list[tuple],
+        templates: list[dict[str, Any]],
+        hierarchy_levels: list[str] | None,
+    ) -> list[ChartSpec]:
+        """Match each domain-configured template's required_roles against this
+        dataset's actual columns. A template only produces a chart when every
+        required role resolves to at least one column."""
+        all_cols = metrics + dimensions + temporals
+        charts: list[ChartSpec] = []
+
+        for template in templates:
+            required_roles = template.get("required_roles", [])
+            resolved: list[tuple[str, tuple]] = []
+            unmatched = False
+
+            for role in required_roles:
+                match = self._resolve_role(role, all_cols, hierarchy_levels)
+                if match is None:
+                    unmatched = True
+                    break
+                resolved.append((role, match))
+
+            if unmatched or not resolved:
+                continue
+
+            dimension_col: str | None = None
+            metric_col: str | None = None
+            for role, (p, c) in resolved:
+                if role == "temporal_dimension" or role == "hierarchy_dimension":
+                    if dimension_col is None:
+                        dimension_col = p.physical_name
+                elif c.candidate_column_role == ColumnRole.METRIC:
+                    if metric_col is None:
+                        metric_col = p.physical_name
+                else:
+                    if dimension_col is None:
+                        dimension_col = p.physical_name
+
+            hierarchy_info = None
+            title = template.get("title_template", template["key"])
+            if "hierarchy_dimension" in required_roles and hierarchy_levels:
+                hierarchy_info = {
+                    "current_level": hierarchy_levels[0],
+                    "next_level": hierarchy_levels[1] if len(hierarchy_levels) > 1 else None,
+                }
+                title = title.replace("{hierarchy_level}", hierarchy_levels[0])
+
+            charts.append(ChartSpec(
+                chart_key=template["key"],
+                category=ChartCategory(template.get("category", "business")),
+                chart_type=ChartType(template["chart_type"]),
+                title=title,
+                dimension=dimension_col,
+                metric=metric_col,
+                aggregation=template.get("aggregation", "count"),
+                hierarchy_info=hierarchy_info,
+            ))
+
+        return charts
+
+    def _resolve_role(
+        self, role: str, columns: list[tuple], hierarchy_levels: list[str] | None,
+    ) -> tuple | None:
+        """Find the first column satisfying a required_roles entry — checked
+        against ColumnRole, then candidate_semantic_type, then two special
+        cases that aren't per-column facts: hierarchy_dimension (membership in
+        the detected hierarchy chain) and status_dimension (alias for the
+        generator's generic "status" default)."""
+        if role == "hierarchy_dimension":
+            if not hierarchy_levels:
+                return None
+            for p, c in columns:
+                if p.physical_name in hierarchy_levels:
+                    return (p, c)
+            return None
+
+        for p, c in columns:
+            if c.candidate_column_role.value == role:
+                return (p, c)
+            if c.candidate_semantic_type == role:
+                return (p, c)
+            if role == "status_dimension" and c.candidate_semantic_type == "status":
+                return (p, c)
+        return None
+
+    def _generate_generic_business_charts(
+        self,
+        metrics: list[tuple],
+        dimensions: list[tuple],
+        temporals: list[tuple],
+        hierarchy_levels: list[str] | None,
+    ) -> list[ChartSpec]:
+        """Generic, domain-agnostic fallback rules — used when a domain has no
+        templates, or this dataset's columns don't satisfy any of them."""
         charts: list[ChartSpec] = []
 
         # Line chart: metric over time (if temporal + metric available)

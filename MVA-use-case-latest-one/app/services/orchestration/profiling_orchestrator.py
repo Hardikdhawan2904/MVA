@@ -9,12 +9,10 @@ import pandas as pd
 
 from app.core.config import Settings
 from app.core.enums import (
-    RunStatus, FileType, PrimaryDomain, ColumnRole, StageStatus,
-    RefinedDataType, HierarchyChainStatus, RuleSource,
+    RunStatus, FileType, ColumnRole, HierarchyChainStatus, RuleSource,
 )
 from app.core.exceptions import UnsupportedDomainError
 from app.core.logging import get_logger
-from app.core.constants import PIPELINE_VERSION
 from app.repositories.configuration_repository import ConfigurationRepository
 from app.services.ingestion.file_validator import FileValidator
 from app.services.ingestion.csv_loader import CSVLoader
@@ -25,8 +23,6 @@ from app.services.profiling.column_profiler import ColumnProfiler
 from app.services.profiling.type_refiner import TypeRefiner
 from app.services.profiling.identifier_detector import IdentifierDetector
 from app.services.profiling.semantic_candidate_generator import SemanticCandidateGenerator
-from app.services.classification.rules_loader import ClassificationRulesLoader
-from app.services.classification.hybrid_classifier import HybridClassifier
 from app.services.schema_intelligence.interface import SchemaIntelligenceProvider
 from app.services.schema_intelligence.models import ColumnAnalysisInput, DomainContext
 from app.services.domains.secondary_domain_classifier import SecondaryDomainClassifier
@@ -111,14 +107,7 @@ class ProfilingOrchestrator:
         self._chart_generator = ChartCandidateGenerator()
         self._agg_engine = AggregationEngine()
 
-        # Hybrid classifier (YAML rules + LLM fallback)
-        from app.services.llm.interface import LLMProvider
-        rules_loader = ClassificationRulesLoader(config_dir="config/rules")
         llm_provider = schema_intelligence._llm if hasattr(schema_intelligence, '_llm') else None
-        self._hybrid_classifier = HybridClassifier(
-            rules_loader=rules_loader,
-            llm_provider=llm_provider,
-        )
         self._suggestion_generator = RuleSuggestionGenerator(llm_provider) if llm_provider else None
 
     def execute(

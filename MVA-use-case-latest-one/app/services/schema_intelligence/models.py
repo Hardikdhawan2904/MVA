@@ -3,7 +3,7 @@
 from typing import Any
 from pydantic import BaseModel, Field
 
-from app.core.enums import SchemaIntelligenceDecision, ColumnRole
+from app.core.enums import SchemaIntelligenceDecision
 
 
 class ColumnAnalysisInput(BaseModel):

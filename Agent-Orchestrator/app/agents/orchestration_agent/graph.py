@@ -1,0 +1,102 @@
+"""Orchestrator pipeline as a LangGraph StateGraph.
+
+Topology:
+
+  call_agent1 ─(stop)──────────────────────────────────────────────→ END (error)
+      │(continue)
+      ▼
+  extract_domain_and_metadata ─(stop)──────────────────────────────→ END (error)
+      │(continue)
+      ▼
+  call_agent2 ─(stop)───────────────────────────────────────────────→ END (error)
+      │(continue)
+      ▼
+  fetch_agent2_result ─(stop)───────────────────────────────────────→ END (error)
+      │(continue)
+      ▼
+  finalize → END (success)
+
+Each "stop" branch means a node already populated error_status_code /
+error_content in state — the graph doesn't need a dedicated error node,
+routing straight to END is enough since run_orchestrator_pipeline() reads
+those two fields directly off the final state.
+"""
+
+from typing import Any
+
+from fastapi.responses import JSONResponse
+from langgraph.graph import StateGraph, END
+
+from app.agents.orchestration_agent.config import get_entry_point
+from app.agents.orchestration_agent.state import PipelineState
+from app.agents.orchestration_agent.nodes.pipeline import OrchestratorGraphNodes
+
+_nodes = OrchestratorGraphNodes()
+
+
+def build_orchestrator_graph():
+    """Compile the orchestrator StateGraph. Stateless across requests (no
+    per-request service construction needed, unlike Agent 2's graph) so it's
+    built once at import time and reused for every request."""
+    g = StateGraph(PipelineState)
+
+    g.add_node("call_agent1", _nodes.call_agent1)
+    g.add_node("extract_domain_and_metadata", _nodes.extract_domain_and_metadata)
+    g.add_node("call_agent2", _nodes.call_agent2)
+    g.add_node("fetch_agent2_result", _nodes.fetch_agent2_result)
+    g.add_node("finalize", _nodes.finalize)
+
+    g.set_entry_point(get_entry_point())
+
+    g.add_conditional_edges(
+        "call_agent1", _nodes.route_after_agent1,
+        {"stop": END, "continue": "extract_domain_and_metadata"},
+    )
+    g.add_conditional_edges(
+        "extract_domain_and_metadata", _nodes.route_after_domain,
+        {"stop": END, "continue": "call_agent2"},
+    )
+    g.add_conditional_edges(
+        "call_agent2", _nodes.route_after_agent2,
+        {"stop": END, "continue": "fetch_agent2_result"},
+    )
+    g.add_conditional_edges(
+        "fetch_agent2_result", _nodes.route_after_fetch,
+        {"stop": END, "continue": "finalize"},
+    )
+    g.add_edge("finalize", END)
+
+    return g.compile()
+
+
+_graph = build_orchestrator_graph()
+
+
+async def run_orchestrator_pipeline(
+    filename: str,
+    content_type: str,
+    content: bytes,
+    sheet_name: str | None = None,
+    force_reclassify: bool = False,
+) -> dict[str, Any] | JSONResponse:
+    """Execute the orchestrator graph. Returns the success dict
+    ({"agent1", "agent2", "primary_domain_used"}) on completion, or a
+    JSONResponse with the same stage/status-code shape the old linear
+    run_pipeline() returned on any failure."""
+    initial_state: PipelineState = {
+        "filename": filename,
+        "content_type": content_type,
+        "content": content,
+        "sheet_name": sheet_name,
+        "force_reclassify": force_reclassify,
+    }
+
+    final_state = await _graph.ainvoke(initial_state, config={"recursion_limit": 25})
+
+    if final_state.get("error_content") is not None:
+        return JSONResponse(
+            status_code=final_state["error_status_code"],
+            content=final_state["error_content"],
+        )
+
+    return final_state["result"]

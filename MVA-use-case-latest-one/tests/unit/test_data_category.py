@@ -4,14 +4,11 @@ import pytest
 import pandas as pd
 
 from app.core.config import Settings
-from app.core.enums import DataCategory, ColumnRole, RefinedDataType
-from app.services.classification.data_category_classifier import (
-    DataCategoryClassifier,
-    ColumnCategoryResult,
-)
+from app.core.enums import DataCategory
+from app.services.classification.data_category_classifier import DataCategoryClassifier
 from app.services.profiling.column_profiler import ColumnProfiler
 from app.services.profiling.type_refiner import TypeRefiner
-from app.services.profiling.semantic_candidate_generator import SemanticCandidate, SemanticCandidateGenerator
+from app.services.profiling.semantic_candidate_generator import SemanticCandidateGenerator
 
 
 @pytest.fixture

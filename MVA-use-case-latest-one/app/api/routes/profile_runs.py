@@ -19,8 +19,8 @@ from app.services.ingestion.temporary_storage import TemporaryStorage
 from app.services.llm.factory import create_llm_provider
 from app.services.quality.overall_score import calculate_overall_score
 from app.services.schema_intelligence.local_provider import LocalSchemaIntelligenceProvider
-from app.services.orchestration.profiling_orchestrator import ProfilingOrchestrator
 from app.services.orchestration.job_manager import JobManager, ExecutionMode
+from app.agents.data_profiling_agent.graph import run_profiling_graph
 from app.schemas.requests import DrillDownRequest
 from app.schemas.responses import RunCreatedResponse
 
@@ -31,13 +31,13 @@ router = APIRouter(prefix="/profile-runs", tags=["profile-runs"])
 _job_manager = JobManager(mode=ExecutionMode.BACKGROUND_THREAD)
 
 
-def _get_orchestrator(settings: Settings) -> ProfilingOrchestrator:
-    """Build orchestrator with current settings."""
+def _get_graph_dependencies(settings: Settings) -> tuple[ConfigurationRepository, LocalSchemaIntelligenceProvider, TemporaryStorage]:
+    """Build the profiling graph's shared dependencies with current settings."""
     config_repo = ConfigurationRepository(config_dir="config")
     llm = create_llm_provider(settings)
     si = LocalSchemaIntelligenceProvider(llm)
     temp = TemporaryStorage(settings)
-    return ProfilingOrchestrator(settings, config_repo, si, temp)
+    return config_repo, si, temp
 
 
 def _parse_run_id(run_id: str) -> uuid.UUID:
@@ -178,12 +178,16 @@ async def create_profile_run(
     approved_rule_dicts = [rd.definition_json for rd in active_rules]
     rule_definition_ids_by_key = {rd.rule_key: rd.id for rd in active_rules}
 
-    # Execute pipeline via job manager
-    orchestrator = _get_orchestrator(settings)
+    # Execute pipeline (LangGraph-based) via job manager
+    config_repo_dep, si_dep, temp_dep = _get_graph_dependencies(settings)
     _job_manager.create_job(str(run_id))
 
     def _run_pipeline():
-        return orchestrator.execute(
+        return run_profiling_graph(
+            settings=settings,
+            config_repo=config_repo_dep,
+            schema_intelligence=si_dep,
+            temp_storage=temp_dep,
             run_id=run_id,
             file_content=content,
             filename=filename,

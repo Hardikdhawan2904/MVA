@@ -1,13 +1,11 @@
 """Candidate builder — orchestrates hierarchy inference end-to-end."""
 
-from typing import Any
-
 import pandas as pd
 
 from app.core.enums import HierarchyChainStatus
 from app.core.logging import get_logger
 from app.repositories.configuration_repository import ConfigurationRepository
-from app.services.hierarchy.template_matcher import TemplateMatcher, TemplateMatchResult
+from app.services.hierarchy.template_matcher import TemplateMatcher
 from app.services.hierarchy.chain_selector import ChainSelector, HierarchyChainResult
 from app.services.hierarchy.functional_dependency import FunctionalDependencyValidator
 from app.services.profiling.column_profiler import ColumnProfileResult

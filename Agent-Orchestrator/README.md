@@ -2,7 +2,7 @@
 
 Coordinates the multi-agent data pipeline: uploads a dataset once, sends it through **Agent 1 (Schema Intelligence Layer)** for classification and quality gating, then feeds Agent 1's output into **Agent 2 (MVA Data Profiling Engine)** for deep profiling — and returns both results together in a single response.
 
-Deliberately simple: sequential HTTP calls, no branching logic, no workflow framework (no LangGraph or similar — a plain FastAPI router is all this needs). Each future agent added to the pipeline becomes another step in the same sequence.
+Deliberately simple: sequential HTTP calls with conditional stop-on-error edges, expressed as a LangGraph `StateGraph` (`app/agents/orchestration_agent/`) rather than a chain of early returns — no LLM calls, no tools, just a deterministic relay. Each future agent added to the pipeline becomes another node in the same graph.
 
 ## Architecture
 

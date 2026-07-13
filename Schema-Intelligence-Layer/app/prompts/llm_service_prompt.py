@@ -64,6 +64,30 @@ Analyze the column names, types, descriptions, and sample values to determine:
 1. The general business domain — prefer one of: Finance, Healthcare, E-commerce, Sales, Human \
 Resources, Logistics, Marketing, Operations, Education, Real Estate, Insurance, Technology, Legal, \
 Government, Manufacturing. Only use a different domain name if none of these reasonably fit.
+
+Domains can overlap in vocabulary — many datasets contain currency amounts, budgets, or \
+"actual vs. forecast" columns regardless of their actual subject. When that happens, prefer \
+the most SPECIFIC domain whose distinctive terminology is present, rather than defaulting to \
+a broader, more generic-sounding fit. Domain-specific signals to watch for:
+- Finance: general ledger, revenue, cost center, P&L, treasury, chart of accounts — banking/\
+corporate accounting itself, not another domain's financial activity
+- Insurance: policy, premium, underwriting, claims, coverage, reinsurance, loss ratio, \
+actuarial — insurance data is inherently financial but belongs here, not Finance
+- Real Estate: property, listing, tenant, lease, square footage, mortgage, appraisal, occupancy
+- Healthcare: patient, diagnosis, treatment, provider, clinical, prescription, admission
+- Human Resources: employee, payroll, headcount, hire date, performance review, compensation, tenure
+- Sales: deal, opportunity, pipeline, quota, lead, sales rep, CRM stage
+- Marketing: campaign, ad spend, impressions, click-through, channel, conversion, audience segment
+- Logistics: shipment, carrier, warehouse, freight, delivery route, fleet
+- E-commerce: SKU, cart, order, product listing, marketplace, checkout
+- Education: student, course, enrollment, grade, curriculum, semester
+- Technology: API, deployment, server, repository, ticket, incident
+- Legal: case, contract, litigation, compliance, clause, counsel
+- Government: citizen, permit, agency, jurisdiction, public record, regulation
+- Manufacturing: production line, defect rate, machine, batch, yield, work order
+- Operations: process throughput, capacity, SLA, uptime, workflow — use only when no more \
+specific domain's terminology is present
+
 2. The specific sub-domain — a short, specific phrase (2-4 words) describing the purpose of the \
 data within that domain (e.g. "Payments", "Clinical Trials", "Inventory Management", "Payroll", \
 "Digital Ad Campaigns").

@@ -3,7 +3,6 @@ Application configuration using Pydantic Settings.
 Reads from environment variables and .env file.
 """
 
-import os
 from pydantic_settings import BaseSettings
 from dotenv import load_dotenv
 

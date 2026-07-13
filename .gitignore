@@ -40,3 +40,4 @@ tmp/
 Thumbs.db
 .vscode/
 .idea/
+.claude/

@@ -19,11 +19,10 @@ Schema_Intelligence_layer/
 │   │   └── upload.py              # API endpoints for ingestion, catalogs, and registry queries
 │   ├── services/
 │   │   ├── quality_validator.py   # Config-driven Data Quality Validator (10 modular checks)
-│   │   ├── validator.py           # File extension and integrity validation
-│   │   ├── loader.py              # File loader (reads Excel, CSV, TSV to Pandas DataFrames)
+│   │   ├── validator.py           # Supported file extensions helper
 │   │   ├── metadata_extractor.py  # Column types, names, counts, and sample extraction
 │   │   ├── llm_service.py         # Groq LLM client (domain classification and descriptions)
-│   │   └── database.py            # SQLite connection, schema initializations, and CRUD queries
+│   │   └── database.py            # PostgreSQL connection, schema initializations, and CRUD queries
 │   ├── prompts/
 │   │   └── llm_service_prompt.py  # System and user prompts for Groq LLM tasks
 │   └── datastore/
@@ -53,8 +52,7 @@ Schema_Intelligence_layer/
     *   `/datasets/{dataset_id}` (GET): Fetches the full metadata catalog record.
     *   `/datasets/{dataset_id}/dataframe` (GET): Retrieves the loaded DataFrame from the memory registry cache, returning row lists as JSON.
 *   **[app/services/quality_validator.py](app/services/quality_validator.py)**: Executes the core weighted scoring and quality checks. It reads configuration parameters from `config/quality_threshold.json` and runs 10 independent checks against the **entire uploaded dataset** — Column Count, Missing Values, Duplicate Columns, Duplicate Rows, Empty Columns, Datatype Consistency, Corrupted Values, Null-Heavy Rows, Cell Length Outliers, and Mixed Formats. All 10 checks are implemented with vectorized pandas operations (no Python-level row loops), so scanning the full dataset is fast regardless of size — earlier versions sampled only the first/last 10 rows to keep this gate fast, which is no longer necessary now that the checks themselves are fast.
-*   **[app/services/validator.py](app/services/validator.py)**: Performs basic structural checks on uploaded files, verifying file types (CSV, XLS, XLSX, TSV) and verifying that the loaded Pandas DataFrame is non-empty and well-formed.
-*   **[app/services/loader.py](app/services/loader.py)**: Acts as the tabular file reader, using proper Pandas engines (CSV engines or Openpyxl for Excel sheets) to parse data streams into in-memory DataFrames while handling encoding configurations and header alignments.
+*   **[app/services/validator.py](app/services/validator.py)**: Declares the set of supported file extensions (CSV, XLS, XLSX) and a helper to extract a filename's extension. File parsing and the non-empty/well-formed checks now live in the Schema Intelligence Agent's `validate_and_load` LangGraph node (`app/agents/schema_intelligence_agent/nodes/pipeline.py`).
 *   **[app/services/metadata_extractor.py](app/services/metadata_extractor.py)**: Extracts technical structural parameters. Calculates row counts, column counts, lists column names, extracts column Pandas data types (mapping them to serializable string names), and slices a clean JSON-safe data sample of the dataset.
 *   **[app/services/llm_service.py](app/services/llm_service.py)**: Communicates with the Groq API endpoint using the `llama-3.1-8b-instant` model. Generates natural language explanations for columns based on names and samples, and classifies the dataset's business domain (e.g. Finance, Logistics, HR) with confidence scores and logic reasoning. Column description generation is batched — datasets wider than `MAX_COLUMNS_PER_LLM_CALL` (30) columns are split into multiple smaller LLM calls and merged, since a single prompt covering every column in a very wide dataset can exceed Groq's per-request token limit. Domain classification similarly caps the columns it includes in its prompt to the same limit, using them as a representative sample rather than requiring exhaustive coverage.
 *   **[app/services/database.py](app/services/database.py)**: Manages PostgreSQL CRUD query executions. Initializes the database catalog, runs `ADD COLUMN IF NOT EXISTS` schema migrations to support additions (like `quality_score` and `quality_report`), and serializes/deserializes JSON objects for storage.

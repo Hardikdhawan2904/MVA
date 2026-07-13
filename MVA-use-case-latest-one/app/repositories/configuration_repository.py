@@ -39,10 +39,6 @@ class ConfigurationRepository:
         filename = f"domains/{domain_name.lower()}.yaml"
         return self._load_yaml(filename)
 
-    def get_application_config(self) -> dict[str, Any]:
-        """Load application-level configuration."""
-        return self._load_yaml("application.yaml")
-
     def get_quality_weights(self) -> dict[str, Any]:
         """Load quality dimension weights."""
         return self._load_yaml("quality_weights.yaml")

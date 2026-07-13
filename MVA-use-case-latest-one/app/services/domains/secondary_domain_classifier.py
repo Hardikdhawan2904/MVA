@@ -9,7 +9,7 @@ from app.core.constants import (
 from app.core.enums import SecondaryDomainStatus
 from app.core.logging import get_logger
 from app.repositories.configuration_repository import ConfigurationRepository
-from app.services.domains.evidence_builder import EvidenceBuilder, DomainScoreResult
+from app.services.domains.evidence_builder import EvidenceBuilder
 from app.services.llm.interface import LLMProvider, LLMRequest
 from app.services.llm.prompts import SECONDARY_DOMAIN_SYSTEM, SECONDARY_DOMAIN_PROMPT_V1
 from app.services.llm.structured_output import SecondaryDomainDecision

@@ -4,7 +4,7 @@ import pytest
 import pandas as pd
 
 from app.core.config import Settings
-from app.core.enums import QualityDimension, QualityStatus, RuleType, RuleSource
+from app.core.enums import QualityStatus, RuleType, RuleSource
 from app.services.profiling.column_profiler import ColumnProfiler
 from app.services.quality.completeness import assess_completeness
 from app.services.quality.uniqueness import assess_uniqueness

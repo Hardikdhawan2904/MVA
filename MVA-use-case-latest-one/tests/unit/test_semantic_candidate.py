@@ -4,10 +4,9 @@ import pytest
 import pandas as pd
 
 from app.core.config import Settings
-from app.core.enums import RefinedDataType, ColumnRole
+from app.core.enums import ColumnRole
 from app.services.profiling.column_profiler import ColumnProfiler
 from app.services.profiling.type_refiner import TypeRefiner
-from app.services.profiling.identifier_detector import IdentifierDetector
 from app.services.profiling.semantic_candidate_generator import SemanticCandidateGenerator
 
 
@@ -39,12 +38,22 @@ class TestSemanticCandidateGenerator:
 
     def test_identifier_role(self, profiler, refiner, generator):
         """Identifier columns should get role=identifier."""
-        values = [f"TXN-{i:06d}" for i in range(100)]
-        profile, rt = _profile_and_refine(profiler, refiner, values, "transaction_id")
+        values = [f"ID-{i:06d}" for i in range(100)]
+        profile, rt = _profile_and_refine(profiler, refiner, values, "record_id")
         result = generator.generate(profile, rt, is_identifier=True)
         assert result.candidate_column_role == ColumnRole.IDENTIFIER
         assert result.candidate_semantic_type == "identifier"
         assert result.candidate_confidence >= 0.85
+
+    def test_transaction_identifier_role(self, profiler, refiner, generator):
+        """Identifier columns whose name signals a specific entity get a refined
+        semantic_type, so chart templates requiring e.g. transaction_identifier
+        can resolve against them."""
+        values = [f"TXN-{i:06d}" for i in range(100)]
+        profile, rt = _profile_and_refine(profiler, refiner, values, "transaction_id")
+        result = generator.generate(profile, rt, is_identifier=True)
+        assert result.candidate_column_role == ColumnRole.IDENTIFIER
+        assert result.candidate_semantic_type == "transaction_identifier"
 
     def test_monetary_amount_metric(self, profiler, refiner, generator):
         """Numeric column with 'amount' in name should be metric."""

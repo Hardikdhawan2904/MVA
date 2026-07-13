@@ -1,7 +1,6 @@
 """Tests for configuration loading."""
 
 import pytest
-from pathlib import Path
 
 from app.core.config import Settings
 from app.repositories.configuration_repository import ConfigurationRepository

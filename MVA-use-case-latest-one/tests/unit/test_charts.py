@@ -4,7 +4,7 @@ import pytest
 import pandas as pd
 
 from app.core.config import Settings
-from app.core.enums import ChartType, ChartCategory, ColumnRole, RefinedDataType
+from app.core.enums import ChartType, ChartCategory
 from app.services.charts.candidate_generator import ChartCandidateGenerator, ChartSpec
 from app.services.charts.aggregation_engine import AggregationEngine
 from app.services.charts.drilldown_service import DrillDownService

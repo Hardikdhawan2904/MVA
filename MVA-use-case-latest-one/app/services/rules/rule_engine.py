@@ -1,10 +1,8 @@
 """Deterministic rule engine — evaluates business rules against a DataFrame."""
 
-import re
 from typing import Any
 
 import pandas as pd
-import numpy as np
 
 from app.core.enums import RuleType, RuleSource
 from app.core.logging import get_logger

@@ -84,7 +84,7 @@ class TestProfilingOrchestrator:
         csv = self._make_csv("col1\nval\n")
         result = orchestrator.execute(
             run_id=uuid.uuid4(), file_content=csv,
-            filename="data.csv", primary_domain="Insurance",
+            filename="data.csv", primary_domain="Healthcare",
         )
         assert result.status == RunStatus.FAILED
         assert result.error["code"] == "UNSUPPORTED_DOMAIN"

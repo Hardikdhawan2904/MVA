@@ -3,7 +3,6 @@
 import pytest
 from pathlib import Path
 
-import pandas as pd
 from openpyxl import Workbook
 
 from app.core.config import Settings

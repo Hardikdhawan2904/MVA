@@ -3,8 +3,6 @@
 import pytest
 from pathlib import Path
 
-import pandas as pd
-
 from app.core.config import Settings
 from app.core.exceptions import FileValidationError, DatasetLimitError
 from app.services.ingestion.csv_loader import CSVLoader

@@ -11,7 +11,8 @@ from app.services.profiling.column_profiler import ColumnProfileResult
 _METRIC_PATTERNS = re.compile(
     r"(amount|amt|price|revenue|cost|total|balance|sum|fee|charge|"
     r"salary|compensation|pay|income|expense|profit|loss|value|"
-    r"quantity|qty|count|volume|weight|score|rate|ratio)",
+    r"quantity|qty|count|volume|weight|score|rate|ratio|tenure|"
+    r"premium|claim)",
     re.IGNORECASE,
 )
 
@@ -26,7 +27,8 @@ _TEMPORAL_PATTERNS = re.compile(
 # Name patterns for status/flag dimensions
 _STATUS_PATTERNS = re.compile(
     r"(status|state|flag|type|category|class|kind|level|tier|"
-    r"grade|priority|severity|outcome|result|decision|stage)",
+    r"grade|priority|severity|outcome|result|decision|stage|"
+    r"segment|channel|department|dept)",
     re.IGNORECASE,
 )
 
@@ -79,15 +81,23 @@ class SemanticCandidateGenerator:
         - Detected patterns
         - Identifier status
         """
-        evidence: list[dict[str, Any]] = []
-
         # Identifiers
         if is_identifier:
+            name = profile.normalized_key.lower()
+            semantic_type = "identifier"
+            if "transaction" in name or "txn" in name:
+                semantic_type = "transaction_identifier"
+            elif "employee" in name or "emp" in name:
+                semantic_type = "employee_identifier"
+            elif "interaction" in name:
+                semantic_type = "interaction_identifier"
+            elif "policy" in name:
+                semantic_type = "policy_identifier"
             return SemanticCandidate(
                 column_name=profile.physical_name,
                 normalized_key=profile.normalized_key,
                 refined_type=refined_type,
-                candidate_semantic_type="identifier",
+                candidate_semantic_type=semantic_type,
                 candidate_column_role=ColumnRole.IDENTIFIER,
                 candidate_confidence=0.90,
                 evidence=[{"type": "identifier_detection", "value": "grain_key"}],
@@ -264,9 +274,37 @@ class SemanticCandidateGenerator:
 
         # Check if it's a metric (monetary amount, count, score)
         if _METRIC_PATTERNS.search(name):
-            # Determine specific semantic type
+            # Determine specific semantic type — business-labeled keywords checked
+            # first so they win over the generic buckets below.
+            # Business-concept words (what the column IS) checked before
+            # actual/forecast/variance modifiers (WHICH data point it is) — most
+            # insurance/finance columns in variance-reporting datasets carry an
+            # _actual/_budget/_variance suffix on every underlying concept, so if
+            # the modifier won here, premium/claims/revenue/expense columns would
+            # all collapse into generic actual_amount/forecast_amount and never
+            # be recognizable as their real business concept.
             semantic_type = "monetary_amount"
-            if any(h in name for h in ("count", "qty", "quantity", "volume")):
+            if "revenue" in name:
+                semantic_type = "revenue_amount"
+            elif "premium" in name:
+                semantic_type = "premium_amount"
+            elif "claim" in name:
+                semantic_type = "claims_amount"
+            elif "expense" in name:
+                semantic_type = "expense_amount"
+            elif "variance" in name:
+                semantic_type = "variance_amount"
+            elif "actual" in name:
+                semantic_type = "actual_amount"
+            elif "forecast" in name or "budget" in name:
+                semantic_type = "forecast_amount"
+            elif any(h in name for h in ("salary", "compensation", "wage")):
+                semantic_type = "salary_amount"
+            elif "tenure" in name:
+                semantic_type = "tenure"
+            elif "satisfaction" in name:
+                semantic_type = "satisfaction_score"
+            elif any(h in name for h in ("count", "qty", "quantity", "volume")):
                 semantic_type = "count_metric"
             elif any(h in name for h in ("score", "rating")):
                 semantic_type = "score"
@@ -321,6 +359,20 @@ class SemanticCandidateGenerator:
             {"type": "distinct_count", "value": profile.distinct_count},
         ]
 
+        # Check for decline/reject reason codes before the generic description catch —
+        # these are small fixed code sets meant to be charted as a dimension, not free text.
+        if "reason" in name and ("decline" in name or "reject" in name):
+            evidence.append({"type": "name_pattern", "value": "decline_reason_keyword"})
+            return SemanticCandidate(
+                column_name=profile.physical_name,
+                normalized_key=profile.normalized_key,
+                refined_type=refined_type,
+                candidate_semantic_type="decline_reason",
+                candidate_column_role=ColumnRole.DIMENSION,
+                candidate_confidence=0.80,
+                evidence=evidence,
+            )
+
         # Check for description/text fields that happen to have low cardinality
         if any(h in name for h in ("desc", "description", "note", "comment", "remark", "reason")):
             evidence.append({"type": "name_pattern", "value": "description_keyword"})
@@ -337,7 +389,17 @@ class SemanticCandidateGenerator:
         # Check for status/flag
         if _STATUS_PATTERNS.search(name):
             semantic_type = "status"
-            if "type" in name or "category" in name:
+            if "expense" in name:
+                semantic_type = "expense_category"
+            elif "segment" in name:
+                semantic_type = "customer_segment"
+            elif "loyalty" in name:
+                semantic_type = "loyalty_tier"
+            elif "department" in name or "dept" in name:
+                semantic_type = "department"
+            elif "channel" in name:
+                semantic_type = "channel_dimension"
+            elif "type" in name or "category" in name:
                 semantic_type = "category"
             elif "tier" in name or "level" in name or "grade" in name:
                 semantic_type = "tier"
@@ -390,6 +452,19 @@ class SemanticCandidateGenerator:
     ) -> SemanticCandidate:
         """Generate candidate for text columns."""
         name = profile.normalized_key.lower()
+
+        # Check for decline/reject reason codes before the generic description catch —
+        # these are small fixed code sets meant to be charted as a dimension, not free text.
+        if "reason" in name and ("decline" in name or "reject" in name):
+            return SemanticCandidate(
+                column_name=profile.physical_name,
+                normalized_key=profile.normalized_key,
+                refined_type=refined_type,
+                candidate_semantic_type="decline_reason",
+                candidate_column_role=ColumnRole.DIMENSION,
+                candidate_confidence=0.80,
+                evidence=[{"type": "name_pattern", "value": "decline_reason_keyword"}],
+            )
 
         # Check if it's a description or note
         if any(h in name for h in ("desc", "description", "note", "comment", "remark", "reason")):

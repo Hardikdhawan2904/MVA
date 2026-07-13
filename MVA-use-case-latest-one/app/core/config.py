@@ -26,7 +26,6 @@ class Settings(BaseSettings):
 
     # Drill-down Cubes
     min_cube_group_size: int = Field(default=5, alias="MIN_CUBE_GROUP_SIZE")
-    max_drill_down_levels: int = Field(default=5, alias="MAX_DRILL_DOWN_LEVELS")
 
     # LLM Provider
     llm_provider: str = Field(default="groq", alias="LLM_PROVIDER")
@@ -36,16 +35,11 @@ class Settings(BaseSettings):
     llm_max_retries: int = Field(default=2, alias="LLM_MAX_RETRIES")
     llm_burst_cooldown_seconds: float = Field(default=5.0, alias="LLM_BURST_COOLDOWN_SECONDS")
 
-    # Schema Intelligence
-    schema_intelligence_provider: str = Field(default="local", alias="SCHEMA_INTELLIGENCE_PROVIDER")
-
     # Logging
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     log_format: str = Field(default="json", alias="LOG_FORMAT")
 
     # Application
-    app_env: str = Field(default="development", alias="APP_ENV")
-    app_debug: bool = Field(default=False, alias="APP_DEBUG")
     api_prefix: str = Field(default="/api/v1", alias="API_PREFIX")
 
     # Authentication

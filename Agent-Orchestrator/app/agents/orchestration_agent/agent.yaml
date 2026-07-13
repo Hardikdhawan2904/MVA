@@ -1,0 +1,78 @@
+agent:
+  name: ORCH
+  full_name: Orchestration Agent
+  version: "1.0.0"
+  domain: Multi-Agent Pipeline Coordination
+
+  role: >
+    Coordinates the handoff between Agent 1 (Schema Intelligence Layer) and Agent 2
+    (Data Profiling Agent). Makes no profiling or classification decisions itself —
+    its only job is sequencing the two HTTP calls, deriving Agent 2's primary_domain
+    input directly from Agent 1's classification, and stopping cleanly with a clear
+    error at whichever stage fails.
+
+  goal: >
+    Run a dataset through the full pipeline and return both agents' results together,
+    without ever asking a human caller to supply a domain Agent 1 has already
+    determined, and without silently continuing past a failed stage.
+
+  constraints:
+    - Never accepts a manual primary_domain override from the caller — it is always
+      derived from Agent 1's business_domain classification
+    - Stops immediately (no call to Agent 2) if Agent 1 rejects the file at its
+      quality gate
+    - Stops immediately with a clear error if Agent 1's classification isn't one of
+      Agent 2's supported domains — no guessing, no silent fallback domain
+    - Makes no LLM calls itself — it is a pure deterministic relay; all reasoning
+      happens inside Agent 1 and Agent 2
+
+  # ── LLM config ──────────────────────────────────────────────────────────────
+  llm:
+    provider: none   # this agent makes no LLM calls — see role/constraints above
+
+  # ── LangGraph ───────────────────────────────────────────────────────────────
+  langgraph:
+    framework: LangGraph (StateGraph)
+    pattern: Deterministic sequential relay with conditional stop-on-error edges —
+      not a ReAct loop (no LLM, no tools).
+    state_schema: PipelineState
+
+    pipeline:
+      entry_point: call_agent1
+      nodes:
+        - call_agent1
+        - extract_domain_and_metadata
+        - call_agent2
+        - fetch_agent2_result
+        - finalize
+      conditional_edges:
+        - from: call_agent1
+          router: route_after_agent1
+          routes: { stop: END, continue: extract_domain_and_metadata }
+        - from: extract_domain_and_metadata
+          router: route_after_domain
+          routes: { stop: END, continue: call_agent2 }
+        - from: call_agent2
+          router: route_after_agent2
+          routes: { stop: END, continue: fetch_agent2_result }
+        - from: fetch_agent2_result
+          router: route_after_fetch
+          routes: { stop: END, continue: finalize }
+
+  # ── Output schema ─────────────────────────────────────────────────────────────
+  output:
+    format: "dict | JSONResponse (error response on any failed stage)"
+    fields:
+      agent1:              "Agent 1's (Schema Intelligence Layer) full response, with dataframe_records stripped"
+      agent2:              "Agent 2's (Data Profiling Agent) full profiling result, fetched after the run completes"
+      primary_domain_used: "The business_domain derived from Agent 1's classification and passed to Agent 2"
+
+  # ── Invocation ──────────────────────────────────────────────────────────────
+  invocation:
+    entry_function: run_orchestrator_pipeline
+    file: app/agents/orchestration_agent/graph.py
+    signature: >
+      run_orchestrator_pipeline(filename, content_type, content, sheet_name,
+      force_reclassify) -> dict | JSONResponse
+    called_from:
+      - "app/routes/pipeline.py -> run_pipeline"
