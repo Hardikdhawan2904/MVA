@@ -1,6 +1,7 @@
 """Groq LLM provider — uses Llama 3.3 Versatile 70B via Groq API."""
 
 import json
+import time
 from typing import Any
 
 import httpx
@@ -105,7 +106,6 @@ class GroqProvider:
 
                 # Rate limit — don't retry immediately
                 if status_code == 429:
-                    import time
                     time.sleep(min(2 ** attempt, 10))
 
                 if attempt == self._max_retries:
@@ -116,6 +116,11 @@ class GroqProvider:
 
             except Exception as e:
                 logger.error("groq_unexpected_error", error=str(e), attempt=attempt)
+                # Connection-level failures (resets, refused connections) benefit from
+                # the same backoff as rate limits — retrying immediately can worsen a
+                # network/throttling issue instead of giving it a chance to clear.
+                if attempt < self._max_retries:
+                    time.sleep(min(2 ** attempt, 10))
                 if attempt == self._max_retries:
                     return LLMResponse(
                         content="", model=model, success=False,

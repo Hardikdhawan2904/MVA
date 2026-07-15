@@ -2,12 +2,16 @@
 
 Topology:
 
-  validate_and_load → run_quality_gate ─(quality_gate_router)─┬─"fail"──────→ END (422)
-                                                                └─"pass"──→ check_existing_dataset
-  check_existing_dataset → extract_metadata_node ─(classification_needed_router)─┬─"classify"──→ classify_dataset_node ─┐
-                                                                                  └─"reuse"─────→ reuse_existing_classification_node ─┤
-                                                                                                                                        ▼
-                                                                                                                          persist_and_finalize → END
+  validate_and_load → check_existing_dataset → run_quality_gate ─(quality_gate_router)─┬─"fail"──────→ END (422)
+                                                                                          └─"pass"──→ extract_metadata_node
+  extract_metadata_node ─(classification_needed_router)─┬─"classify"──→ classify_dataset_node ─┐
+                                                          └─"reuse"─────→ reuse_existing_classification_node ─┤
+                                                                                                                ▼
+                                                                                                  persist_and_finalize → END
+
+check_existing_dataset runs before the quality gate so an append's combined
+dataset — not just the newly-uploaded increment — is what actually gets
+validated (see nodes/pipeline.py's Node 2/3 comments for why).
 
 classify_dataset_node has its own internal ReAct sub-graph (see
 classification_agent/, a self-contained sub-agent package with its own
@@ -55,12 +59,12 @@ def build_schema_intelligence_graph():
 
     g.set_entry_point(get_entry_point())
 
-    g.add_edge("validate_and_load", "run_quality_gate")
+    g.add_edge("validate_and_load", "check_existing_dataset")
+    g.add_edge("check_existing_dataset", "run_quality_gate")
     g.add_conditional_edges(
         "run_quality_gate", quality_gate_router,
-        {"fail": END, "pass": "check_existing_dataset"},
+        {"fail": END, "pass": "extract_metadata_node"},
     )
-    g.add_edge("check_existing_dataset", "extract_metadata_node")
     g.add_conditional_edges(
         "extract_metadata_node", classification_needed_router,
         {"classify": "classify_dataset_node", "reuse": "reuse_existing_classification_node"},

@@ -61,8 +61,8 @@ agent:
       entry_point: validate_and_load
       nodes:
         - validate_and_load
-        - run_quality_gate
         - check_existing_dataset
+        - run_quality_gate
         - extract_metadata_node
         - classify_dataset_node
         - reuse_existing_classification_node
@@ -72,7 +72,7 @@ agent:
           router: quality_gate_router
           routes:
             fail: END
-            pass: check_existing_dataset
+            pass: extract_metadata_node
         - from: extract_metadata_node
           router: classification_needed_router
           routes:

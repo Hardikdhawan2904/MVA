@@ -73,24 +73,12 @@ def validate_and_load(state: SchemaIntelligenceState) -> dict[str, Any]:
     return {"file_extension": file_extension, "df": df}
 
 
-# ── Node 2: deterministic quality gate ──────────────────────────────────────
-
-def run_quality_gate(state: SchemaIntelligenceState) -> dict[str, Any]:
-    report = DataQualityValidator().run_validation(state["df"])
-    if report["decision"] == "FAIL":
-        logger.warning(
-            f"Dataset '{state['filename']}' failed data quality validation "
-            f"(Score: {report['dataset_score']}/{report['passing_score']}). Aborting."
-        )
-        return {"quality_report": report, "error_status_code": 422, "error_content": report}
-    return {"quality_report": report}
-
-
-def quality_gate_router(state: SchemaIntelligenceState) -> Literal["fail", "pass"]:
-    return "fail" if state.get("error_content") is not None else "pass"
-
-
-# ── Node 3: existing-dataset lookup (append vs new) ─────────────────────────
+# ── Node 2: existing-dataset lookup (append vs new) ─────────────────────────
+# Runs before the quality gate so an append's combined dataset — not just the
+# newly-uploaded increment — is what actually gets validated. Re-uploading a
+# file that's already been ingested would otherwise always look clean (each
+# individual upload is internally duplicate-free), even though the combined
+# result silently doubles up rows.
 
 def check_existing_dataset(state: SchemaIntelligenceState) -> dict[str, Any]:
     existing = get_metadata_by_name(state["filename"])
@@ -109,6 +97,27 @@ def check_existing_dataset(state: SchemaIntelligenceState) -> dict[str, Any]:
         combined_df = state["df"]
 
     return {"existing_metadata": existing, "is_new": False, "profiling_df": combined_df}
+
+
+# ── Node 3: deterministic quality gate ──────────────────────────────────────
+# Validates profiling_df (the post-append, combined dataset for an existing
+# filename; identical to the raw upload for a brand-new one) — not the raw
+# upload alone — so append-time issues like re-uploading the same file are
+# actually visible in the quality report instead of always looking clean.
+
+def run_quality_gate(state: SchemaIntelligenceState) -> dict[str, Any]:
+    report = DataQualityValidator().run_validation(state["profiling_df"])
+    if report["decision"] == "FAIL":
+        logger.warning(
+            f"Dataset '{state['filename']}' failed data quality validation "
+            f"(Score: {report['dataset_score']}/{report['passing_score']}). Aborting."
+        )
+        return {"quality_report": report, "error_status_code": 422, "error_content": report}
+    return {"quality_report": report}
+
+
+def quality_gate_router(state: SchemaIntelligenceState) -> Literal["fail", "pass"]:
+    return "fail" if state.get("error_content") is not None else "pass"
 
 
 # ── Node 4: metadata extraction (+ initial persistence) ─────────────────────
