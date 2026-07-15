@@ -73,6 +73,6 @@ agent:
     file: app/agents/orchestration_agent/graph.py
     signature: >
       run_orchestrator_pipeline(filename, content_type, content, sheet_name,
-      force_reclassify) -> dict | JSONResponse
+      force_reclassify, business_question, target_column) -> dict | JSONResponse
     called_from:
       - "app/routes/pipeline.py -> run_pipeline"

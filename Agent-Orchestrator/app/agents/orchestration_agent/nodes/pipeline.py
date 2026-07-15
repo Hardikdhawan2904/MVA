@@ -129,6 +129,10 @@ class OrchestratorGraphNodes:
         }
         if state.get("sheet_name"):
             data["sheet_name"] = state["sheet_name"]
+        if state.get("business_question"):
+            data["business_question"] = state["business_question"]
+        if state.get("target_column"):
+            data["target_column"] = state["target_column"]
 
         try:
             async with httpx.AsyncClient() as client:

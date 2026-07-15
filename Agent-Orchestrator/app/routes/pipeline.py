@@ -24,6 +24,16 @@ async def run_pipeline(
         description="If this filename already exists in Agent 1's catalog, re-run its LLM column "
                     "descriptions and domain classification instead of reusing the original result.",
     ),
+    business_question: str | None = Form(
+        default=None,
+        description="Optional — when supplied, Agent 2 classifies the dataset's target/feature/drop "
+                    "columns and an ML-vs-LLM approach for this question (feature_recommendation).",
+    ),
+    target_column: str | None = Form(
+        default=None,
+        description="Optional explicit override — if the caller already knows the target column, "
+                    "Agent 2 skips LLM target-guessing and uses it directly.",
+    ),
 ):
     """
     Runs a dataset through the full agent pipeline:
@@ -50,4 +60,6 @@ async def run_pipeline(
         content=content,
         sheet_name=sheet_name,
         force_reclassify=force_reclassify,
+        business_question=business_question,
+        target_column=target_column,
     )

@@ -15,6 +15,7 @@ from app.models.column_classification import ColumnClassification
 from app.models.hierarchy import HierarchyChain, HierarchyEdge
 from app.models.quality_assessment import QualityAssessment
 from app.models.readiness_assessment import ReadinessAssessment
+from app.models.feature_recommendation import FeatureRecommendation
 from app.models.chart_specification import ChartSpecification
 from app.core.enums import RunStatus
 from app.core.constants import PIPELINE_VERSION
@@ -207,6 +208,27 @@ class ProfileRunRepository:
             )
             self._session.add(ra)
 
+    def persist_feature_recommendation(
+        self, run_id: uuid.UUID, recommendation: dict[str, Any], business_question: str | None = None
+    ) -> None:
+        """Persist the target/feature/drop recommendation for a run. A no-op
+        when recommendation is empty (e.g. a lightweight/legacy result)."""
+        if not recommendation:
+            return
+        fr = FeatureRecommendation(
+            run_id=run_id,
+            business_question=business_question,
+            target_column=recommendation.get("target_column"),
+            problem_type=recommendation.get("problem_type"),
+            time_column=recommendation.get("time_column"),
+            recommended_approach=recommendation.get("recommended_approach"),
+            approach_reasoning=recommendation.get("approach_reasoning"),
+            feature_columns_json=recommendation.get("feature_columns"),
+            drop_columns_json=recommendation.get("drop_columns"),
+            confidence=recommendation.get("confidence"),
+        )
+        self._session.add(fr)
+
     def persist_charts(self, run_id: uuid.UUID, charts: list[dict[str, Any]]) -> None:
         """Persist chart specifications."""
         for c in charts:
@@ -293,6 +315,11 @@ class ProfileRunRepository:
         """List all chart specifications for a run."""
         stmt = select(ChartSpecification).where(ChartSpecification.run_id == run_id)
         return list(self._session.execute(stmt).scalars().all())
+
+    def get_feature_recommendation(self, run_id: uuid.UUID) -> FeatureRecommendation | None:
+        """Get the target/feature/drop recommendation for a run."""
+        stmt = select(FeatureRecommendation).where(FeatureRecommendation.run_id == run_id)
+        return self._session.execute(stmt).scalars().first()
 
     def commit(self) -> None:
         """Commit the current transaction."""

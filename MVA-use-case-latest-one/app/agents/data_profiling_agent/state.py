@@ -19,6 +19,8 @@ class ProfilingState(TypedDict, total=False):
     request_rules: list[dict[str, Any]] | None
     sheet_name: str | None
     approved_rule_dicts: list[dict[str, Any]] | None
+    business_question: str | None
+    target_column_override: str | None
 
     # ── File loading ────────────────────────────────────────────────────────
     file_type: Any
@@ -59,6 +61,9 @@ class ProfilingState(TypedDict, total=False):
     # ── Rule suggestions (LLM) ──────────────────────────────────────────────
     rule_suggestions: list[dict[str, Any]]
     rule_suggestion_retry_count: int
+
+    # ── Target/feature/drop recommendation ───────────────────────────────────
+    feature_recommendation: dict[str, Any]
 
     # ── Readiness / charts / drill-down (skipped on a weak quality gate) ────
     readiness_assessments: list[dict[str, Any]]

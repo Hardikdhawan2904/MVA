@@ -65,13 +65,21 @@ class ReadinessEngine:
         dimension_count: int,
         description_coverage: float,
         row_count: int,
+        feature_recommendation: dict[str, Any] | None = None,
     ) -> list[ReadinessResult]:
-        """Compute analytics, ML, LLM, and overall readiness."""
+        """Compute analytics, ML, LLM, and overall readiness.
+
+        feature_recommendation is the feature_target_agent's target/feature/drop
+        classification (see app/agents/data_profiling_agent/nodes/pipeline.py's
+        recommend_target_features node) — always populated (deterministically when
+        no business question was asked, LLM-derived otherwise), so ml/llm readiness
+        can reflect an actual analysis plan instead of a blind heuristic. None only
+        for callers that haven't been updated to pass it (e.g. legacy tests)."""
         analytics = self._assess_analytics(
             profiles, quality_results, has_temporal, metric_count, dimension_count, grain_columns
         )
-        ml = self._assess_ml(profiles, quality_results, grain_columns, row_count)
-        llm = self._assess_llm(profiles, quality_results, description_coverage)
+        ml = self._assess_ml(profiles, quality_results, grain_columns, row_count, feature_recommendation)
+        llm = self._assess_llm(profiles, quality_results, description_coverage, feature_recommendation)
 
         overall_score = (analytics.score + ml.score + llm.score) / 3.0
         overall = ReadinessResult(
@@ -161,7 +169,7 @@ class ReadinessEngine:
             weight_profile_version="analytics-v1",
         )
 
-    def _assess_ml(self, profiles, quality_results, grain_columns, row_count) -> ReadinessResult:
+    def _assess_ml(self, profiles, quality_results, grain_columns, row_count, feature_recommendation=None) -> ReadinessResult:
         """ML readiness emphasizes completeness, feature coverage, identifier contamination."""
         score = 0.0
         strengths: list[dict[str, Any]] = []
@@ -183,14 +191,37 @@ class ReadinessEngine:
             score += con * 15
             evidence.append({"dimension": "consistency", "value": con})
 
-        # Feature coverage (non-identifier columns)
-        non_id_cols = [p for p in profiles if p.physical_name not in grain_columns]
-        feature_ratio = len(non_id_cols) / max(len(profiles), 1)
-        score += feature_ratio * 15
-        evidence.append({"dimension": "feature_coverage", "value": round(feature_ratio, 3)})
+        # Feature coverage — prefer the actual target/feature/drop classification
+        # (weighted by usefulness) over the blind "every non-identifier column
+        # counts" heuristic, when one is available.
+        recommended_features = (feature_recommendation or {}).get("feature_columns")
+        if recommended_features is not None:
+            usefulness_weight = {"high": 1.0, "medium": 0.6, "low": 0.25}
+            weighted = sum(usefulness_weight.get(f.get("usefulness"), 0.5) for f in recommended_features)
+            feature_ratio = weighted / max(len(profiles), 1)
+            score += min(15.0, feature_ratio * 15)
+            evidence.append({"dimension": "feature_coverage", "value": round(feature_ratio, 3), "source": "feature_recommendation"})
+
+            target_column = feature_recommendation.get("target_column")
+            if target_column:
+                strengths.append({"code": "TARGET_IDENTIFIED", "value": target_column})
+            elif feature_recommendation.get("approach_reasoning"):
+                # approach_reasoning is only ever set on the LLM path — its
+                # presence without a target_column means a business question
+                # was asked but the agent couldn't resolve a target, unlike
+                # the deterministic (question-less) fallback which never sets it.
+                blockers.append({"code": "NO_TARGET_IDENTIFIED"})
+
+            recommended_drops = set(d.get("column") for d in feature_recommendation.get("drop_columns") or [])
+        else:
+            non_id_cols = [p for p in profiles if p.physical_name not in grain_columns]
+            feature_ratio = len(non_id_cols) / max(len(profiles), 1)
+            score += feature_ratio * 15
+            evidence.append({"dimension": "feature_coverage", "value": round(feature_ratio, 3)})
+            recommended_drops = set(grain_columns)
 
         # Identifier contamination check
-        id_contamination = len(grain_columns) / max(len(profiles), 1)
+        id_contamination = len(recommended_drops) / max(len(profiles), 1)
         if id_contamination > 0.3:
             blockers.append({"code": "IDENTIFIER_CONTAMINATION", "value": round(id_contamination, 3)})
             score -= 10
@@ -234,7 +265,7 @@ class ReadinessEngine:
             weight_profile_version="ml-v1",
         )
 
-    def _assess_llm(self, profiles, quality_results, description_coverage) -> ReadinessResult:
+    def _assess_llm(self, profiles, quality_results, description_coverage, feature_recommendation=None) -> ReadinessResult:
         """LLM readiness emphasizes description coverage, semantic quality, schema clarity."""
         score = 0.0
         strengths: list[dict[str, Any]] = []
@@ -279,6 +310,17 @@ class ReadinessEngine:
         score += min(15, description_coverage * 15)
 
         score = max(0.0, min(100.0, score))
+
+        # Question-suitability boost — additive only, and only when the LLM
+        # sub-agent actually ran (recommended_approach == "llm"); never applies
+        # to (and never lowers the score for) question-less runs.
+        if feature_recommendation and feature_recommendation.get("recommended_approach") == "llm":
+            confidence = feature_recommendation.get("confidence") or 0.0
+            boost = min(10.0, confidence * 10)
+            score = min(100.0, score + boost)
+            strengths.append({"code": "QUESTION_SUITABLE_FOR_LLM", "value": round(confidence, 3)})
+            evidence.append({"dimension": "recommended_approach", "value": "llm", "confidence": round(confidence, 3)})
+
         return ReadinessResult(
             assessment_type=ReadinessType.LLM,
             score=score,

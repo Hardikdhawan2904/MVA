@@ -327,6 +327,46 @@ class ProfilingGraphNodes:
             )
             return {"rule_suggestions": [], "rule_suggestion_retry_count": retry_count + 1}
 
+    # ── Node 7b: target/feature/drop recommendation ─────────────────────────
+    # Always produces a feature_recommendation — deterministically (no LLM
+    # call) when no business_question/target_column was supplied, so every
+    # run (including question-less ones) has something for assess_readiness
+    # to use, and existing callers see identical readiness scores to before.
+
+    def recommend_target_features(self, state: ProfilingState) -> dict[str, Any]:
+        col_profiles = state["col_profiles"]
+        sem_candidates = state["sem_candidates"]
+        grain_result = state["grain_result"]
+        business_question = state.get("business_question")
+        target_override = state.get("target_column_override")
+
+        if not business_question and not target_override:
+            return {"feature_recommendation": _deterministic_feature_split(sem_candidates, grain_result)}
+
+        if self._llm_provider is None:
+            return {"feature_recommendation": _deterministic_feature_split(sem_candidates, grain_result)}
+
+        from app.agents.feature_target_agent import run_feature_target_agent
+
+        try:
+            recommendation = run_feature_target_agent(
+                llm_model=self._settings.llm_model,
+                api_key=self._settings.llm_api_key,
+                col_profiles=col_profiles,
+                sem_candidates=sem_candidates,
+                grain_result=grain_result,
+                df=state["df"],
+                business_question=business_question,
+                target_column_override=target_override,
+            )
+            return {"feature_recommendation": recommendation}
+        except Exception as e:
+            logger.warning(
+                "feature_target_recommendation_failed",
+                run_id=str(state["run_id"]), error=str(e),
+            )
+            return {"feature_recommendation": _deterministic_feature_split(sem_candidates, grain_result)}
+
     # ── Node 8: readiness ────────────────────────────────────────────────────
 
     def assess_readiness(self, state: ProfilingState) -> dict[str, Any]:
@@ -336,6 +376,7 @@ class ProfilingGraphNodes:
         grain_result = state["grain_result"]
         schema_metadata = state.get("schema_metadata")
         ds_profile = state["dataset_profile_obj"]
+        feature_recommendation = state.get("feature_recommendation")
 
         has_temporal = any(c.candidate_column_role == ColumnRole.TEMPORAL_DIMENSION for c in sem_candidates)
         metric_count = sum(1 for c in sem_candidates if c.candidate_column_role == ColumnRole.METRIC)
@@ -345,6 +386,7 @@ class ProfilingGraphNodes:
         readiness_results = self._readiness_engine.assess_all(
             col_profiles, quality_dims, grain_result.grain_columns,
             has_temporal, metric_count, dim_count, desc_coverage, ds_profile.row_count,
+            feature_recommendation=feature_recommendation,
         )
         return {"readiness_assessments": [r.to_dict() for r in readiness_results]}
 
@@ -406,6 +448,7 @@ class ProfilingGraphNodes:
             "column_output": _build_column_output(
                 col_profiles, refined_types, sem_candidates, si_result, grain_result, schema_metadata,
             ),
+            "feature_recommendation": _deterministic_feature_split(sem_candidates, grain_result),
             "rule_suggestions": [],
             "readiness_assessments": [],
             "charts": [],
@@ -451,6 +494,49 @@ def _build_column_output(profiles, refined_types, candidates, si_result, grain_r
             "is_grain_key": p.physical_name in grain_result.grain_columns,
         })
     return output
+
+
+_FEATURE_ROLES = {ColumnRole.METRIC, ColumnRole.DIMENSION, ColumnRole.TEMPORAL_DIMENSION, ColumnRole.FLAG}
+
+
+def _deterministic_feature_split(sem_candidates, grain_result) -> dict[str, Any]:
+    """No-LLM feature/drop split — used when no business_question/target_column
+    was supplied, and as the fallback if the LLM call fails. Every non-identifier
+    column with a usable semantic role is a candidate feature; grain columns are
+    dropped. No target/problem_type/approach can be determined without a question."""
+    grain_columns = set(grain_result.grain_columns)
+
+    feature_columns = [
+        {
+            "column": c.column_name,
+            "role": c.candidate_column_role.value,
+            # "high" because these are genuinely-typed metric/dimension/temporal/flag
+            # columns (a more precise filter than the old "every non-identifier
+            # column" heuristic, not a weaker one) — "medium" would understate
+            # ml_readiness's feature-coverage score for every question-less run,
+            # which is the common case.
+            "usefulness": "high",
+            "suggested_aggregation": None,
+            "reasoning": "Included by default — no business question was supplied to prioritize features.",
+        }
+        for c in sem_candidates
+        if c.candidate_column_role in _FEATURE_ROLES and c.column_name not in grain_columns
+    ]
+    drop_columns = [
+        {"column": name, "reason": "Identifier / grain key — no predictive value."}
+        for name in grain_result.grain_columns
+    ]
+
+    return {
+        "target_column": None,
+        "problem_type": "unknown",
+        "time_column": None,
+        "recommended_approach": "unknown",
+        "approach_reasoning": None,
+        "feature_columns": feature_columns,
+        "drop_columns": drop_columns,
+        "confidence": 0.0,
+    }
 
 
 def _build_role_map(candidates, profiles) -> dict[str, str]:

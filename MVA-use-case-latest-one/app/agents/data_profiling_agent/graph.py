@@ -5,13 +5,17 @@ Topology (fixed edges except where noted):
   validate_and_load → profile_data → schema_intelligence ─┬─(retry)─→ schema_intelligence
                                                             └─(continue)─→ classify_and_build_hierarchy
   classify_and_build_hierarchy → evaluate_business_rules → assess_quality
-  assess_quality ─(quality_gate_router)─┬─"full"───→ generate_suggestions → assess_readiness
-                                        │                                  → generate_charts → finalize → END
+  assess_quality ─(quality_gate_router)─┬─"full"───→ generate_suggestions → recommend_target_features
+                                        │              → assess_readiness → generate_charts → finalize → END
                                         └─"lightweight"→ finalize_lightweight → END
 
-generate_suggestions has its own internal ReAct sub-graph (see rule_suggestion_agent/,
-a self-contained sub-agent package with its own agent.yaml/config.py/state.py/tools.py/
-graph.py) — from this graph's point of view it's a single node, same as schema_intelligence.
+generate_suggestions and recommend_target_features each have their own internal ReAct
+sub-graph (see rule_suggestion_agent/ and feature_target_agent/, self-contained sub-agent
+packages with their own agent.yaml/config.py/state.py/tools.py/graph.py) — from this graph's
+point of view each is a single node, same as schema_intelligence. recommend_target_features
+only actually calls its LLM sub-graph when a business_question or target_column was supplied
+in the request; otherwise it computes a deterministic (non-LLM) feature/drop split so
+assess_readiness always has something to work with.
 """
 
 import uuid
@@ -54,6 +58,7 @@ def build_profiling_graph(
     g.add_node("evaluate_business_rules", nodes.evaluate_business_rules)
     g.add_node("assess_quality", nodes.assess_quality)
     g.add_node("generate_suggestions", nodes.generate_suggestions)
+    g.add_node("recommend_target_features", nodes.recommend_target_features)
     g.add_node("assess_readiness", nodes.assess_readiness)
     g.add_node("generate_charts", nodes.generate_charts)
     g.add_node("finalize", nodes.finalize)
@@ -79,7 +84,8 @@ def build_profiling_graph(
         {"full": "generate_suggestions", "lightweight": "finalize_lightweight"},
     )
 
-    g.add_edge("generate_suggestions", "assess_readiness")
+    g.add_edge("generate_suggestions", "recommend_target_features")
+    g.add_edge("recommend_target_features", "assess_readiness")
     g.add_edge("assess_readiness", "generate_charts")
     g.add_edge("generate_charts", "finalize")
     g.add_edge("finalize", END)
@@ -124,6 +130,7 @@ def _state_to_pipeline_result(
     result.quality_assessments = state.get("quality_dims") or []
     result.overall_quality = state.get("overall_quality") or {}
     result.readiness_assessments = state.get("readiness_assessments") or []
+    result.feature_recommendation = state.get("feature_recommendation") or {}
     result.charts = state.get("charts") or []
     result.drill_down_cubes = state.get("drill_down_cubes") or []
     result.rule_evaluations = [r.to_dict() for r in state.get("rule_results") or []]
@@ -145,6 +152,8 @@ def run_profiling_graph(
     request_rules: list[dict[str, Any]] | None = None,
     sheet_name: str | None = None,
     approved_rule_dicts: list[dict[str, Any]] | None = None,
+    business_question: str | None = None,
+    target_column_override: str | None = None,
 ) -> PipelineResult:
     """
     Execute the profiling graph and return a PipelineResult — the exact same
@@ -167,6 +176,8 @@ def run_profiling_graph(
         "request_rules": request_rules,
         "sheet_name": sheet_name,
         "approved_rule_dicts": approved_rule_dicts,
+        "business_question": business_question,
+        "target_column_override": target_column_override,
         "schema_intelligence_retry_count": 0,
         "rule_suggestion_retry_count": 0,
         "warnings": [],

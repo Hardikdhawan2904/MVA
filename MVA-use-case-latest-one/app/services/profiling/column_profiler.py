@@ -42,6 +42,7 @@ class ColumnProfileResult:
         boolean_parse_ratio: float,
         dominant_patterns: list[str],
         warnings: list[str],
+        all_integer_valued: bool | None = None,
     ):
         self.physical_name = physical_name
         self.normalized_key = normalized_key
@@ -69,6 +70,12 @@ class ColumnProfileResult:
         self.boolean_parse_ratio = boolean_parse_ratio
         self.dominant_patterns = dominant_patterns
         self.warnings = warnings
+        # Whether every non-null numeric value in the FULL column (not a
+        # sample, not just min/max) has zero fractional part. None when the
+        # column isn't predominantly numeric. This is the authoritative
+        # integer/decimal signal — computed once, here, where the complete
+        # parsed series is available; see TypeRefiner._is_integer.
+        self.all_integer_valued = all_integer_valued
 
     def to_statistics_dict(self) -> dict[str, Any]:
         """Serialize statistics for JSONB storage."""
@@ -96,6 +103,7 @@ class ColumnProfileResult:
             "boolean_parse_ratio": self.boolean_parse_ratio,
             "dominant_patterns": self.dominant_patterns,
             "warnings": self.warnings,
+            "all_integer_valued": self.all_integer_valued,
         }
 
 
@@ -147,6 +155,7 @@ class ColumnProfiler:
         median: float | None = None
         std_dev: float | None = None
         quantiles: dict[str, float] | None = None
+        all_integer_valued: bool | None = None
 
         if len(numeric_valid) > 0 and numeric_parse_ratio > 0.5:
             min_value = float(numeric_valid.min())
@@ -156,6 +165,10 @@ class ColumnProfiler:
             std_dev = float(numeric_valid.std()) if len(numeric_valid) > 1 else 0.0
             q = numeric_valid.quantile([0.25, 0.50, 0.75])
             quantiles = {"q25": float(q.iloc[0]), "q50": float(q.iloc[1]), "q75": float(q.iloc[2])}
+            # Checked against every parsed value, not a sample or just the
+            # extremes — a frequency-dominant mode (e.g. mostly "0") can't
+            # mask a real fractional tail elsewhere in the column.
+            all_integer_valued = bool((numeric_valid % 1 == 0).all())
 
         # String statistics
         str_values = non_null.astype(str)
@@ -214,6 +227,7 @@ class ColumnProfiler:
             boolean_parse_ratio=boolean_parse_ratio,
             dominant_patterns=dominant_patterns,
             warnings=warnings,
+            all_integer_valued=all_integer_valued,
         )
 
     def profile_all(
@@ -284,7 +298,10 @@ class ColumnProfiler:
             (r"^[A-Z]{2}$", "TWO_LETTER_CODE"),
             (r"^[a-f0-9\-]{36}$", "UUID"),
             (r"^[\w.+-]+@[\w-]+\.[\w.]+$", "EMAIL"),
-            (r"^\+?\d[\d\s\-\(\)]{7,}$", "PHONE"),
+            # Requires an actual separator or leading "+" — a bare unbroken
+            # digit run (e.g. an 8-digit BIN/account code) must not match;
+            # it's indistinguishable from any other numeric identifier.
+            (r"^(?=.*[\s\-\(\)+])\+?\d[\d\s\-\(\)]{7,}$", "PHONE"),
             (r"^\d+\.\d{2}$", "DECIMAL_2DP"),
             (r"^\d+$", "INTEGER"),
             (r"^-?\d+\.?\d*$", "NUMERIC"),

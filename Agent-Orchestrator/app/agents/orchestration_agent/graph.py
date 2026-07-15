@@ -78,6 +78,8 @@ async def run_orchestrator_pipeline(
     content: bytes,
     sheet_name: str | None = None,
     force_reclassify: bool = False,
+    business_question: str | None = None,
+    target_column: str | None = None,
 ) -> dict[str, Any] | JSONResponse:
     """Execute the orchestrator graph. Returns the success dict
     ({"agent1", "agent2", "primary_domain_used"}) on completion, or a
@@ -89,6 +91,8 @@ async def run_orchestrator_pipeline(
         "content": content,
         "sheet_name": sheet_name,
         "force_reclassify": force_reclassify,
+        "business_question": business_question,
+        "target_column": target_column,
     }
 
     final_state = await _graph.ainvoke(initial_state, config={"recursion_limit": 25})

@@ -39,6 +39,9 @@ agent:
     min_overall_score: 0.20
     below_threshold_skips:
       - generate_suggestions
+      - recommend_target_features's LLM path — finalize_lightweight still computes the
+        deterministic (non-LLM) feature/drop split directly, so feature_recommendation
+        is never empty even below the quality gate
       - assess_readiness
       - generate_charts
       - drill_down_cubes
@@ -61,6 +64,7 @@ agent:
         - evaluate_business_rules
         - assess_quality
         - generate_suggestions
+        - recommend_target_features
         - assess_readiness
         - generate_charts
         - finalize
@@ -92,6 +96,7 @@ agent:
       quality_assessments:     "Per-dimension quality scores (validity, conformity, consistency, timeliness, integrity, accuracy, business-rule compliance, semantic quality)"
       overall_quality:         "Combined overall quality score and quality-gate decision"
       readiness_assessments:   "BI readiness assessment — skipped below the quality gate"
+      feature_recommendation: "Target/feature/drop classification and ML-vs-LLM approach recommendation from feature_target_agent — deterministic (non-LLM) when no business_question/target_column was supplied, always populated (including below the quality gate)"
       charts:                  "Chart candidates generated from the profile — skipped below the quality gate"
       drill_down_cubes:        "Drill-down aggregation cubes — skipped below the quality gate"
       rule_evaluations:        "Results of evaluating existing business rules against this dataset"

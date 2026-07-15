@@ -130,6 +130,55 @@ class TestTypeRefiner:
         # Should be categorical, not identifier
         assert result == RefinedDataType.CATEGORICAL
 
+    def test_bare_digit_code_not_phone(self, profiler: ColumnProfiler, refiner: TypeRefiner):
+        """An 8-digit bank identification number (or any bare, unformatted
+        numeric code) must not be classified as PHONE — a real phone number
+        represented as a string almost always has a separator or "+" prefix;
+        a bare digit run is indistinguishable from any other numeric code."""
+        values = ["51234567", "52345678", "53456789", "54567890", "55678901"] * 10
+        profile = _profile(profiler, values, "BIN8")
+        result = refiner.refine(profile)
+        assert result != RefinedDataType.PHONE
+        assert result == RefinedDataType.INTEGER
+
+    def test_formatted_phone_still_detected(self, profiler: ColumnProfiler, refiner: TypeRefiner):
+        """A genuinely phone-shaped string (with separators) should still be
+        detected — the fix narrows PHONE to require a separator/"+", it
+        shouldn't eliminate real phone detection entirely."""
+        values = ["+1-555-123-4567", "+1-555-987-6543", "(555) 234-5678", "555-345-6789"] * 5
+        profile = _profile(profiler, values, "contact_phone")
+        result = refiner.refine(profile)
+        assert result == RefinedDataType.PHONE
+
+    def test_bare_digit_phone_detected_via_name_hint(self, profiler: ColumnProfiler, refiner: TypeRefiner):
+        """A bare (unformatted) digit run of plausible phone length IS still
+        detected as PHONE when the column name actually says so — the fix
+        narrows false positives on codes, it shouldn't blanket-eliminate
+        legitimate unformatted phone number columns."""
+        values = [f"98765{i:05d}" for i in range(50)]
+        profile = _profile(profiler, values, "customer_phone_number")
+        result = refiner.refine(profile)
+        assert result == RefinedDataType.PHONE
+
+    def test_automobile_column_not_false_matched_as_phone(self, profiler: ColumnProfiler, refiner: TypeRefiner):
+        """Regression guard: the phone name-hint match must be word-bounded,
+        not a raw substring check — "automobile_id" contains "mobile" as a
+        substring but has nothing to do with phone numbers."""
+        values = [f"{20000000 + i}" for i in range(50)]
+        profile = _profile(profiler, values, "automobile_id_number")
+        result = refiner.refine(profile)
+        assert result != RefinedDataType.PHONE
+
+    def test_zero_heavy_column_with_fractional_tail_is_decimal(self, profiler: ColumnProfiler, refiner: TypeRefiner):
+        """A mostly-zero numeric column with a genuine fractional tail (e.g.
+        estimated_decline_loss_usd, ~75% exact 0) must be DECIMAL, not
+        INTEGER — the frequency-dominant "0" pattern must not shortcut past
+        the real min/max check."""
+        values = ["0"] * 75 + ["0.83", "4.44", "1.2", "2.5", "0.75"] * 5
+        profile = _profile(profiler, values, "estimated_decline_loss_usd")
+        result = refiner.refine(profile)
+        assert result == RefinedDataType.DECIMAL
+
     def test_unique_long_commentary_not_identifier(self, profiler: ColumnProfiler, refiner: TypeRefiner):
         """A free-text commentary column where every row happens to be a unique
         sentence should NOT be an identifier — high cardinality alone isn't

@@ -93,6 +93,20 @@ def _readiness_assessment_to_dict(ra) -> dict[str, Any]:
     }
 
 
+def _feature_recommendation_to_dict(fr) -> dict[str, Any]:
+    return {
+        "business_question": fr.business_question,
+        "target_column": fr.target_column,
+        "problem_type": fr.problem_type,
+        "time_column": fr.time_column,
+        "recommended_approach": fr.recommended_approach,
+        "approach_reasoning": fr.approach_reasoning,
+        "feature_columns": fr.feature_columns_json or [],
+        "drop_columns": fr.drop_columns_json or [],
+        "confidence": fr.confidence,
+    }
+
+
 def _rule_suggestion_to_dict(s) -> dict[str, Any]:
     definition = s.suggested_definition_json or {}
     return {
@@ -137,6 +151,8 @@ async def create_profile_run(
     schema_metadata: str = Form(default="{}"),
     request_rules: str = Form(default="[]"),
     sheet_name: str | None = Form(default=None),
+    business_question: str | None = Form(default=None),
+    target_column: str | None = Form(default=None),
     settings: Settings = Depends(get_cached_settings),
     user: str = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -151,6 +167,11 @@ async def create_profile_run(
     - request_rules: JSON string with additional rules
     - sheet_name: required only when the XLSX workbook has more than one
       non-empty sheet; names which sheet to load
+    - business_question: optional — when supplied, the pipeline classifies the
+      dataset's target/feature/drop columns and an ML-vs-LLM approach for this
+      question (feature_recommendation) instead of a generic deterministic split
+    - target_column: optional explicit override — if the caller already knows
+      the target column, skip LLM target-guessing and use it directly
     """
     run_id = uuid.uuid4()
 
@@ -196,6 +217,8 @@ async def create_profile_run(
             request_rules=rules,
             sheet_name=sheet_name,
             approved_rule_dicts=approved_rule_dicts,
+            business_question=business_question,
+            target_column_override=target_column,
         )
 
     _job_manager.submit(str(run_id), _run_pipeline)
@@ -227,6 +250,7 @@ async def create_profile_run(
         repo.persist_hierarchy(run_id, result.hierarchy)
         repo.persist_quality_assessments(run_id, result.quality_assessments)
         repo.persist_readiness_assessments(run_id, result.readiness_assessments)
+        repo.persist_feature_recommendation(run_id, result.feature_recommendation, business_question)
         repo.persist_charts(run_id, result.charts)
         rule_repo.persist_suggestions(run_id, result.rule_suggestions)
         rule_repo.persist_evaluations(run_id, result.rule_evaluations, rule_definition_ids_by_key)
@@ -295,6 +319,7 @@ def get_full_result(run_id: str, db: Session = Depends(get_db)) -> dict[str, Any
     hierarchy = repo.get_hierarchy(run_uuid)
     quality_assessments = repo.list_quality_assessments(run_uuid)
     readiness_assessments = repo.list_readiness_assessments(run_uuid)
+    feature_recommendation = repo.get_feature_recommendation(run_uuid)
     charts = repo.list_charts(run_uuid)
     rule_suggestions = RuleRepository(db).list_suggestions_for_run(run_uuid)
 
@@ -331,6 +356,7 @@ def get_full_result(run_id: str, db: Session = Depends(get_db)) -> dict[str, Any
         "quality_assessments": [_quality_assessment_to_dict(qa) for qa in quality_assessments],
         "overall_quality": overall_quality,
         "readiness_assessments": [_readiness_assessment_to_dict(ra) for ra in readiness_assessments],
+        "feature_recommendation": _feature_recommendation_to_dict(feature_recommendation) if feature_recommendation else {},
         "charts": [_chart_to_dict(c) for c in charts],
         "rule_suggestions": [_rule_suggestion_to_dict(s) for s in rule_suggestions],
         "started_at": run.started_at.isoformat() if run.started_at else None,
@@ -379,6 +405,18 @@ def get_readiness(run_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
         raise RunNotFoundError(run_id)
     assessments = repo.list_readiness_assessments(run_uuid)
     return {"assessments": [_readiness_assessment_to_dict(ra) for ra in assessments]}
+
+
+@router.get("/{run_id}/feature-recommendation")
+def get_feature_recommendation(run_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Get the target/feature/drop recommendation for a run."""
+    repo = ProfileRunRepository(db)
+    run_uuid = _parse_run_id(run_id)
+    if not repo.get_run(run_uuid):
+        from app.core.exceptions import RunNotFoundError
+        raise RunNotFoundError(run_id)
+    fr = repo.get_feature_recommendation(run_uuid)
+    return {"feature_recommendation": _feature_recommendation_to_dict(fr) if fr else {}}
 
 
 @router.get("/{run_id}/hierarchy")

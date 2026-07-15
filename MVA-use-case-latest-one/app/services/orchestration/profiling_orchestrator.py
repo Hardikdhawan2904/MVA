@@ -64,6 +64,7 @@ class PipelineResult:
         self.quality_assessments: list[dict[str, Any]] = []
         self.overall_quality: dict[str, Any] = {}
         self.readiness_assessments: list[dict[str, Any]] = []
+        self.feature_recommendation: dict[str, Any] = {}
         self.charts: list[dict[str, Any]] = []
         self.drill_down_cubes: list[dict[str, Any]] = []
         self.rule_evaluations: list[dict[str, Any]] = []

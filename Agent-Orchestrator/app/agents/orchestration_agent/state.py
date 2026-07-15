@@ -13,6 +13,8 @@ class PipelineState(TypedDict, total=False):
     content: bytes
     sheet_name: str | None
     force_reclassify: bool
+    business_question: str | None
+    target_column: str | None
 
     # ── Agent 1 ─────────────────────────────────────────────────────────────
     agent1_status_code: int

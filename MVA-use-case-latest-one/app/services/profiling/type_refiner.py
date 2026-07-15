@@ -28,7 +28,16 @@ _COUNTRY_CODES_3 = {
 }
 
 _EMAIL_PATTERN = re.compile(r"^[\w.+-]+@[\w-]+\.[\w.]+$")
-_PHONE_PATTERN = re.compile(r"^\+?\d[\d\s\-\(\)]{7,}$")
+# Requires an actual separator or leading "+" — a bare unbroken digit run
+# (e.g. an 8-digit BIN/account code) is indistinguishable from any other
+# numeric identifier and must not match here. Bare/unformatted real phone
+# numbers are still recoverable via _is_bare_digit_phone_by_name below.
+_PHONE_PATTERN = re.compile(r"^(?=.*[\s\-\(\)+])\+?\d[\d\s\-\(\)]{7,}$")
+# Word-boundary (underscore-delimited) match, not raw substring — otherwise
+# e.g. "automobile_type" would false-match on "mobile".
+_PHONE_NAME_HINT_PATTERN = re.compile(
+    r"(?:^|_)(phone|mobile|cell|telephone|contact_?no|contact_?number|fax)(?:_|$)", re.IGNORECASE
+)
 
 
 class TypeRefiner:
@@ -133,7 +142,15 @@ class TypeRefiner:
         return email_count / max(len(profile.representative_values), 1) >= 0.8
 
     def _is_phone(self, profile: ColumnProfileResult) -> bool:
-        """Check if values match phone pattern."""
+        """Check if values match phone pattern.
+
+        A formatted number (separator or "+" present) is recognized from
+        shape alone via _PHONE_PATTERN. A bare, unformatted digit run is
+        fundamentally ambiguous with any other numeric code (BIN, account
+        number, zip, etc.) — it's only classified as PHONE when the column
+        name itself says so, same disambiguation pattern _is_percentage()
+        already uses for 0-100 ranges.
+        """
         if "PHONE" in profile.dominant_patterns:
             return True
         if profile.non_null_count == 0:
@@ -142,7 +159,18 @@ class TypeRefiner:
             1 for v in profile.representative_values
             if isinstance(v, str) and _PHONE_PATTERN.match(v)
         )
-        return phone_count / max(len(profile.representative_values), 1) >= 0.8
+        if phone_count / max(len(profile.representative_values), 1) >= 0.8:
+            return True
+        return self._is_bare_digit_phone_by_name(profile)
+
+    def _is_bare_digit_phone_by_name(self, profile: ColumnProfileResult) -> bool:
+        if not _PHONE_NAME_HINT_PATTERN.search(profile.normalized_key):
+            return False
+        if profile.numeric_parse_ratio < 0.90:
+            return False
+        if profile.min_string_length is None or profile.max_string_length is None:
+            return False
+        return 7 <= profile.min_string_length and profile.max_string_length <= 15
 
     def _is_currency_code(self, profile: ColumnProfileResult) -> bool:
         """Check if values are ISO currency codes."""
@@ -195,15 +223,23 @@ class TypeRefiner:
         return False
 
     def _is_integer(self, profile: ColumnProfileResult) -> bool:
-        """Check if numeric values are integers (no decimals)."""
-        if "INTEGER" in profile.dominant_patterns:
-            return True
+        """Check if numeric values are integers (no decimals).
+
+        Prefers all_integer_valued — checked against every parsed value in
+        the column, not a sample — over dominant-pattern/min-max heuristics,
+        which are frequency- or extremes-based and can be fooled by a
+        zero-heavy column (mode "0" matching the INTEGER pattern) that hides
+        a genuine fractional tail elsewhere in the distribution.
+        """
+        if profile.all_integer_valued is not None:
+            return profile.all_integer_valued
+
+        # Fallback for callers that construct a ColumnProfileResult without
+        # all_integer_valued (e.g. hand-built test fixtures).
         if "DECIMAL_2DP" in profile.dominant_patterns:
             return False
-        # Check if all values have no fractional part
         if profile.min_value is not None and profile.max_value is not None:
             if profile.min_value == int(profile.min_value) and profile.max_value == int(profile.max_value):
-                # Check samples
                 for v in profile.sample_values:
                     try:
                         f = float(v)
@@ -212,7 +248,8 @@ class TypeRefiner:
                     except (ValueError, TypeError):
                         pass
                 return True
-        return False
+            return False
+        return "INTEGER" in profile.dominant_patterns
 
     def _is_identifier(self, profile: ColumnProfileResult) -> bool:
         """Check if column is likely an identifier (near-unique)."""
