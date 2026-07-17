@@ -5,16 +5,18 @@ agent:
   domain: Multi-Agent Pipeline Coordination
 
   role: >
-    Coordinates the handoff between Agent 1 (Schema Intelligence Layer) and Agent 2
-    (Data Profiling Agent). Makes no profiling or classification decisions itself —
-    its only job is sequencing the two HTTP calls, deriving Agent 2's primary_domain
-    input directly from Agent 1's classification, and stopping cleanly with a clear
-    error at whichever stage fails.
+    Coordinates the handoff between Agent 1 (Schema Intelligence Layer), Agent 2
+    (Data Profiling Agent), and — optionally, Insurance domain only — Agent 3
+    (Analytics Agent). Makes no profiling, classification, or analytical decisions
+    itself — its only job is sequencing the HTTP calls, deriving Agent 2's
+    primary_domain input directly from Agent 1's classification, forwarding Agent
+    2's full readiness assessment (not just the bare score) into Agent 3's call,
+    and stopping cleanly with a clear error at whichever required stage fails.
 
   goal: >
-    Run a dataset through the full pipeline and return both agents' results together,
+    Run a dataset through the full pipeline and return all agents' results together,
     without ever asking a human caller to supply a domain Agent 1 has already
-    determined, and without silently continuing past a failed stage.
+    determined, and without silently continuing past a failed required stage.
 
   constraints:
     - Never accepts a manual primary_domain override from the caller — it is always
@@ -23,8 +25,12 @@ agent:
       quality gate
     - Stops immediately with a clear error if Agent 1's classification isn't one of
       Agent 2's supported domains — no guessing, no silent fallback domain
+    - Agent 3 is optional and best-effort — outside its scope (non-Insurance domain,
+      no business_question, non-CSV) it's cleanly skipped; if it errors or is
+      unreachable, agent3.status is "failed" with a reason, and this never fails an
+      otherwise-successful agent1/agent2 result
     - Makes no LLM calls itself — it is a pure deterministic relay; all reasoning
-      happens inside Agent 1 and Agent 2
+      happens inside Agent 1, Agent 2, and Agent 3
 
   # ── LLM config ──────────────────────────────────────────────────────────────
   llm:
@@ -44,6 +50,7 @@ agent:
         - extract_domain_and_metadata
         - call_agent2
         - fetch_agent2_result
+        - call_agent3        # optional, best-effort — see constraints above
         - finalize
       conditional_edges:
         - from: call_agent1
@@ -57,14 +64,21 @@ agent:
           routes: { stop: END, continue: fetch_agent2_result }
         - from: fetch_agent2_result
           router: route_after_fetch
-          routes: { stop: END, continue: finalize }
+          routes: { stop: END, continue: call_agent3 }
+      edges:
+        - from: call_agent3
+          to: finalize        # unconditional — call_agent3 never stops the pipeline on its own failure
+        - from: finalize
+          to: END
 
   # ── Output schema ─────────────────────────────────────────────────────────────
   output:
-    format: "dict | JSONResponse (error response on any failed stage)"
+    format: "dict | JSONResponse (error response on any failed required stage)"
     fields:
       agent1:              "Agent 1's (Schema Intelligence Layer) full response, with dataframe_records stripped"
       agent2:              "Agent 2's (Data Profiling Agent) full profiling result, fetched after the run completes"
+      agent3:               "Agent 3's (Analytics Agent) answer — {status: ok, execution_trace, execution_summary, ...} |
+                              {status: skipped, reason} | {status: failed, reason}. Always present with a status field."
       primary_domain_used: "The business_domain derived from Agent 1's classification and passed to Agent 2"
 
   # ── Invocation ──────────────────────────────────────────────────────────────

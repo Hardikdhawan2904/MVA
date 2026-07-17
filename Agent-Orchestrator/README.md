@@ -41,14 +41,15 @@ Agent 3 is best-effort and never fails an otherwise-successful pipeline: outside
 
 ### Agent 3 (Analytics Agent)
 
-Runs only when **all** of: `primary_domain == "Insurance"`, the upload is a `.csv`, and `business_question` was supplied. Called over `httpx` — the same shape as the call to Agent 2 — posting the file straight through along with Agent 2's `ml_readiness`/`llm_readiness` scores and (if present) its `feature_recommendation.feature_columns`. See the [root API reference](../API_REFERENCE.md#agent-3--analytics-agent-optional-third-stage) for the full response shapes, and [`Analytics-Agent/README.md`](../Analytics-Agent/README.md) for what it does internally.
+Runs only when **all** of: `primary_domain == "Insurance"`, the upload is a `.csv`, and `business_question` was supplied. Called over `httpx` — the same shape as the call to Agent 2 — posting the file straight through along with Agent 2's `ml_readiness`/`llm_readiness` scores, their full readiness breakdown (`agent2.readiness_assessments[]` — strengths/blocking_issues/evidence, not just the score, extracted by `_readiness_and_features()` in `app/agents/orchestration_agent/nodes/pipeline.py`), and (if present) its `feature_recommendation.feature_columns`. Agent 3's response — including its `execution_trace`/`execution_summary` — is forwarded back through `agent3_body` untouched. See the [root API reference](../API_REFERENCE.md#agent-3--analytics-agent-optional-third-stage) for the full response shapes, and [`Analytics-Agent/README.md`](../Analytics-Agent/README.md) for what it does internally.
 
 ### Re-asking Agent 3 without re-running the whole pipeline
 
 `POST /pipeline/ask` — for asking a follow-up question against a dataset already processed by `/pipeline/run`. Takes `file` (re-upload — required, see why below), `business_question` (the new question), and `run_id` (Agent 2's `run_id`, copied from the earlier `/pipeline/run` response's `agent2.run_id`). It fetches Agent 2's *already-persisted* result with one lightweight `GET` (not a new profiling run) and calls Agent 3 directly — Agent 1's quality gate and Agent 2's full profiling pipeline never re-run.
 
 ```json
-{"agent3": {"status": "ok", "query": "...", "response": "...", "ml_readiness_score_used": 29.47, "llm_readiness_score_used": 95.77},
+{"agent3": {"status": "ok", "query": "...", "response": "...", "ml_readiness_score_used": 29.47, "llm_readiness_score_used": 95.77,
+            "execution_trace": [ "..." ], "execution_summary": { "...": "..." }},
  "primary_domain_used": "Insurance"}
 ```
 
@@ -87,6 +88,15 @@ Agent 1, Agent 2, and (if you want the Insurance Q&A stage) Agent 3 must already
 | ANALYTICS_AGENT_TIMEOUT_SECONDS | 120.0 | Timeout for the call to Agent 3 |
 
 No API keys or secrets live here — LLM credentials belong to Agent 1, Agent 2, and Agent 3 individually.
+
+## Running Tests
+
+```bash
+cd ..
+..\venv\Scripts\python.exe -m pytest Agent-Orchestrator/tests/ -v
+```
+
+Uses the shared root venv (this project doesn't carry its own `pytest`) — covers the pure-data helpers in `app/agents/orchestration_agent/nodes/pipeline.py`, currently `_readiness_and_features()` (extracting scores *and* full readiness breakdowns from Agent 2's result, including the missing-assessments and `None`-input edge cases).
 
 ## Example
 

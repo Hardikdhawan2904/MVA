@@ -318,3 +318,34 @@ logging:
   log_sql_queries: true
   log_evidence: true
   audit_trail: true            # Every tool call + result is logged for auditability
+
+# ── 10. Execution Trace (client-facing audit, not just server logs) ──────────
+# Unlike the server-side logging above, this is returned to the caller on
+# every POST /analyze response as execution_trace/execution_summary — built
+# once from the LangGraph run's final state (app/agents/analytics_agent/
+# graph.py::_build_execution_trace), not assembled inline by each handler.
+execution_trace:
+  enabled: true
+  steps: ["intent_detection", "<matched intent>", "narration"]
+  per_step_fields:
+    - "engine"          # model/tool actually used, or null for a gate-only/early-exit step
+    - "gate"             # {name, score, threshold, passed, breakdown} — null when no readiness gate applies
+    - "reason"           # plain-English explanation, enriched with the readiness breakdown's
+                          # strongest/weakest factor and real model metrics when available
+    - "duration_ms"      # real per-node wall-clock time, via graph.stream(stream_mode="updates")
+    - "model_version"    # only on an ML-gated step where a model actually ran (never on fallback)
+  readiness_gates:
+    ml_readiness:
+      threshold: 75.0
+      breakdown_source: "Agent 2's ReadinessEngine (strengths/blocking_issues/evidence), forwarded by Agent-Orchestrator"
+    llm_readiness:
+      threshold: 75.0
+      # A passed gate whose Groq call itself fails is reported distinctly
+      # ("Template Formatter (Groq error)") from a gate that never passed
+      # ("Template Formatter") — ExplanationTool.last_engine_used is what
+      # makes this distinction observable.
+  model_versioning:
+    source: "ml/model_registry.json"
+    prophet: "refits every query — reported as last_run_at, never a fake training date"
+    isolation_forest_and_kmeans: "trained_at from the persisted model + accuracy_metric: null (unsupervised, no fabricated number)"
+    xgboost_and_lightgbm: "real accuracy/r2 cited in the reason for root_cause/forecast when their corroborating evidence is present"

@@ -99,11 +99,17 @@ The one call to make if you just want a file profiled end to end. Sends the uplo
 
 Vendored into this repo at `Analytics-Agent/` (originally a colleague's separate project, github.com/VirenKhapra/Analytics-agent-for-project-3) — a FastAPI service like Agent 1/2, called by the orchestrator over `httpx` the same way it calls Agent 2. It installs from the same root `requirements.txt` and runs under the same shared venv as the other three folders. It answers one business question at a time over an Insurance dataset (KPI lookup, variance, root-cause, forecast, anomaly detection, segmentation).
 
-Runs only when **all** of: `primary_domain == "Insurance"`, the upload is a `.csv`, and `business_question` was supplied. Fed Agent 2's `ml_readiness`/`llm_readiness` scores (`agent2.readiness_assessments[].score`) as Form fields. Response shapes:
+Runs only when **all** of: `primary_domain == "Insurance"`, the upload is a `.csv`, and `business_question` was supplied. Fed Agent 2's `ml_readiness`/`llm_readiness` scores **and** their full breakdown (`agent2.readiness_assessments[]` — strengths/blocking_issues/evidence, not just the bare score) as Form fields, so Agent 3's `execution_trace` can explain *why* a readiness gate passed or failed, not just report a number. Response shapes:
 
 ```jsonc
 // Ran successfully:
-"agent3": {"status": "ok", "query": "...", "conversation_id": "...", "ml_readiness_score_used": 39.48, "llm_readiness_score_used": 95.77, "response": "<narrative text>"}
+"agent3": {
+  "status": "ok", "query": "...", "conversation_id": "...",
+  "ml_readiness_score_used": 39.48, "llm_readiness_score_used": 95.77,
+  "response": "<narrative text>",
+  "execution_trace": [ /* step-by-step decision log — see below */ ],
+  "execution_summary": { /* compact rollup — see below */ }
+}
 
 // Outside its scope (wrong domain / no question / not CSV):
 "agent3": {"status": "skipped", "reason": "..."}
@@ -114,12 +120,39 @@ Runs only when **all** of: `primary_domain == "Insurance"`, the upload is a `.cs
 
 Configured via `Agent-Orchestrator/.env`: `ANALYTICS_AGENT_BASE_URL` (defaults to `http://127.0.0.1:8003`), `ANALYTICS_AGENT_TIMEOUT_SECONDS`.
 
+#### `execution_trace` / `execution_summary`
+
+Every `status: "ok"` response (from `/pipeline/run`, `/pipeline/ask`, or `/analyze` directly) carries these two fields, built once from the LangGraph run's final state — `null` on `status: "error"` rather than fabricating an explanation for a genuine crash.
+
+`execution_trace` is a list of steps (`intent_detection` → the matched intent's handler → `narration`, when narration ran). Each entry:
+
+```jsonc
+{
+  "step": "forecast",
+  "engine": "Prophet",                 // or the deterministic fallback name
+  "gate": {
+    "name": "ml_readiness", "score": 82.0, "threshold": 75.0, "passed": true,
+    "breakdown": { "evidence": [{"dimension": "feature_coverage", "value": 1.0}, ...], "strengths": [...], "blocking_issues": [...] }
+  },
+  "reason": "ML readiness (82.0%) met the 75.0% threshold — using the trained Prophet model. Strongest on feature_coverage (100%); weakest on data_freshness (55%).",
+  "duration_ms": 360.3,                // real per-node wall-clock time, via graph.stream()
+  "model_version": { "refit_per_query": true, "last_run_at": "2026-07-17T22:24:02" }
+}
+```
+
+- `gate` is `null` for intents with no ML/LLM readiness check (show_kpi, variance, root_cause, trend). `gate.breakdown` is `null` when the caller didn't supply one (a direct `/analyze` call outside the Orchestrator has no breakdown to forward).
+- `model_version` only appears when the ML-gated step actually ran a model (not on the fallback path). Prophet refits every query, so it reports `last_run_at`, not a training date; IsolationForest/K-Means report `trained_at` plus an explicitly-`null` `accuracy_metric` (both unsupervised — no fabricated number). root_cause's XGBoost corroboration and forecast's LightGBM key-drivers evidence cite their real registry accuracy/r² in `reason` when present.
+
+`execution_summary` is a compact rollup: `{"intent", "tools_used", "ml_engine", "narration_engine", "execution_time_seconds", "fallback_used"}` — `fallback_used` is `true` if either readiness gate didn't pass, or Groq was attempted but its call itself failed.
+
 #### `POST /pipeline/ask` — re-ask without re-running Agent 1/2
 
 For a follow-up question against a dataset already run through `/pipeline/run`. Params: `file` (multipart upload — must be re-uploaded; see why below), `business_question` (str), `run_id` (Agent 2's `run_id`, from the earlier `/pipeline/run` response's `agent2.run_id` field). Fetches Agent 2's *already-persisted* result with one lightweight `GET /profile-runs/{run_id}/result` — no new profiling work — then calls Agent 3 directly. Agent 1 never runs at all for this endpoint.
 
 ```jsonc
-{"agent3": {"status": "ok", "query": "...", "response": "...", "conversation_id": "...", "ml_readiness_score_used": 29.47, "llm_readiness_score_used": 95.77},
+{"agent3": {"status": "ok", "query": "...", "response": "...", "conversation_id": "...",
+            "ml_readiness_score_used": 29.47, "llm_readiness_score_used": 95.77,
+            "execution_trace": [ /* same shape as /pipeline/run — see above */ ], "execution_summary": { /* ... */ }},
  "primary_domain_used": "Insurance"}
 ```
 
@@ -131,7 +164,7 @@ Requires re-uploading the file because neither Agent 1 nor Agent 2 durably store
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/analyze` | Answer one business question against an uploaded CSV. Params: `file` (multipart upload), `business_question` (str), `conversation_id` (optional str — omit for a new conversation; pass back a prior response's `conversation_id` to continue it), `ml_readiness` (float, default 99.75), `llm_readiness` (float, default 99.75), `feature_recommendation` (optional JSON string — Agent 2's per-column feature classification, used only to validate Agent 3's hardcoded ML feature lists still match this dataset) |
+| `POST` | `/analyze` | Answer one business question against an uploaded CSV. Params: `file` (multipart upload), `business_question` (str), `conversation_id` (optional str — omit for a new conversation; pass back a prior response's `conversation_id` to continue it), `ml_readiness` (float, default 99.75), `llm_readiness` (float, default 99.75), `feature_recommendation` (optional JSON string — Agent 2's per-column feature classification, used only to validate Agent 3's hardcoded ML feature lists still match this dataset), `ml_readiness_breakdown` / `llm_readiness_breakdown` (optional JSON strings — Agent 2's full readiness assessment for the respective gate, surfaced in `execution_trace`'s gate objects; never blocks the request if omitted or malformed) |
 | `GET` | `/health` | Liveness check — Agent 3 has no downstream agents to ping. |
 
 `conversation_id` is always present in the response, generated fresh if the caller didn't supply one. Conversation memory (filter/KPI carryover, LLM prior-turn context) is persisted in Postgres (`agent3` schema on the same [`Shared-Postgres`](../Shared-Postgres) instance Agent 1/2 use) keyed by this id — non-fatal if that database is unreachable, degrading to a single-turn, non-persistent answer rather than failing the request. The Orchestrator never passes `conversation_id` (`/pipeline/run` and `/pipeline/ask` are both stateless), so multi-turn continuity only applies when calling `POST /analyze` directly.

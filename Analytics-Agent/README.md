@@ -26,7 +26,7 @@ A thin `app/main.py`/`app/routes/analyze.py` shell over a LangGraph `StateGraph`
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/analyze` | Answer one business question against an uploaded CSV. Params: `file` (multipart upload), `business_question` (str), `conversation_id` (optional str — omit for a new conversation; pass back a prior response's `conversation_id` to continue it), `ml_readiness` (float, default 99.75), `llm_readiness` (float, default 99.75), `feature_recommendation` (optional JSON string — Agent 2's per-column feature classification for this upload, used only to cross-check the hardcoded ML feature-column lists still match this dataset's schema; never blocks the request). |
+| POST | `/analyze` | Answer one business question against an uploaded CSV. Params: `file` (multipart upload), `business_question` (str), `conversation_id` (optional str — omit for a new conversation; pass back a prior response's `conversation_id` to continue it), `ml_readiness` (float, default 99.75), `llm_readiness` (float, default 99.75), `feature_recommendation` (optional JSON string — Agent 2's per-column feature classification for this upload, used only to cross-check the hardcoded ML feature-column lists still match this dataset's schema; never blocks the request), `ml_readiness_breakdown` / `llm_readiness_breakdown` (optional JSON strings — Agent 2's full readiness assessment, i.e. strengths/blocking_issues/evidence, for the respective gate; surfaced in `execution_trace` so the gate can explain *why*, not just report a score; never blocks the request if omitted or malformed). |
 | GET | `/health` | Liveness check — no downstream agents to ping. |
 
 ### Response shape
@@ -34,15 +34,26 @@ A thin `app/main.py`/`app/routes/analyze.py` shell over a LangGraph `StateGraph`
 ```json
 {
   "status": "ok",
-  "query": "Show Gross Written Premium for FY2025",
+  "query": "Forecast underwriting result for next 6 months",
   "response": "## Summary\n...",
   "conversation_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-  "ml_readiness_score_used": 99.75,
-  "llm_readiness_score_used": 99.75
+  "ml_readiness_score_used": 82.0,
+  "llm_readiness_score_used": 95.77,
+  "execution_trace": [
+    {"step": "intent_detection", "engine": null, "gate": null, "reason": "Detected intent='forecast', kpi='underwriting_result'", "duration_ms": 4.6},
+    {"step": "forecast", "engine": "Prophet", "gate": {"name": "ml_readiness", "score": 82.0, "threshold": 75.0, "passed": true, "breakdown": {"evidence": [{"dimension": "feature_coverage", "value": 0.96}], "strengths": [], "blocking_issues": []}}, "reason": "ML readiness (82.0%) met the 75.0% threshold — using the trained Prophet model. Strongest/only factor: feature_coverage (96%).", "duration_ms": 360.3, "model_version": {"refit_per_query": true, "last_run_at": "2026-07-17T22:24:02"}},
+    {"step": "narration", "engine": "Groq", "gate": {"name": "llm_readiness", "score": 95.77, "threshold": 75.0, "passed": true, "breakdown": null}, "reason": "LLM readiness (95.8%) met the 75.0% threshold — narrated by Groq.", "duration_ms": 270.7}
+  ],
+  "execution_summary": {
+    "intent": "forecast", "tools_used": ["RuleEngine", "SQLTool", "MLTool→Prophet/LightGBM", "ExplanationTool"],
+    "ml_engine": "Prophet", "narration_engine": "Groq", "execution_time_seconds": 0.663, "fallback_used": false
+  }
 }
 ```
 
-Normally called by [`Agent-Orchestrator`](../Agent-Orchestrator) as the pipeline's optional third stage (Insurance domain + CSV + `business_question` only) — see the [root API reference](../API_REFERENCE.md#agent-3--analytics-agent-optional-third-stage) for that integration. The orchestrator never passes `conversation_id` (it's stateless — every `/pipeline/run` or `/pipeline/ask` call gets a fresh conversation), so multi-turn memory only applies when calling `POST /analyze` directly. Can also be exercised locally without an HTTP server via `scripts/cli.py` (see below).
+`execution_trace`/`execution_summary` are built once from the LangGraph run's final state — `null` on `status: "error"` rather than fabricating an explanation for a genuine crash. `gate.breakdown` is `null` when the caller didn't supply `ml_readiness_breakdown`/`llm_readiness_breakdown` (a direct `/analyze` call with just the bare scores). `model_version` only appears on an ML-gated step (`forecast`/`anomaly`/`segment`) that actually ran a model — never on the deterministic-fallback path. Prophet reports `last_run_at` rather than a training date since it refits on every query; IsolationForest/K-Means report `trained_at` plus an explicitly-`null` `accuracy_metric` (both unsupervised — no fabricated number, same reasoning as the LightGBM/K-Means confidence field being omitted rather than invented). `duration_ms` on every step is real per-node wall-clock time from `graph.stream()`, not estimated.
+
+Normally called by [`Agent-Orchestrator`](../Agent-Orchestrator) as the pipeline's optional third stage (Insurance domain + CSV + `business_question` only) — see the [root API reference](../API_REFERENCE.md#agent-3--analytics-agent-optional-third-stage) for that integration, including the readiness-breakdown forwarding. The orchestrator never passes `conversation_id` (it's stateless — every `/pipeline/run` or `/pipeline/ask` call gets a fresh conversation), so multi-turn memory only applies when calling `POST /analyze` directly. Can also be exercised locally without an HTTP server via `scripts/cli.py` (see below).
 
 ## Conversation Memory
 
@@ -115,7 +126,7 @@ Trains Prophet-free LightGBM, IsolationForest, XGBoost, and K-Means against `DAT
 ..\venv\Scripts\python.exe -m pytest tests/ -v
 ```
 
-Covers the rule engine, analytics tool, ML persistence (including the AST-safe rule-condition evaluator), feature-column validation, LangGraph routing, Postgres-backed conversation memory (round-trip persistence and DB-down degradation, against the real shared instance), and a 12-case end-to-end harness exercising every intent (real Groq calls where a key is configured — slower and rate-limit-prone, but confirms the whole path works, not just its parts).
+Covers the rule engine, analytics tool, ML persistence (including the AST-safe rule-condition evaluator), feature-column validation, LangGraph routing, Postgres-backed conversation memory (round-trip persistence and DB-down degradation, against the real shared instance), the execution trace/summary builder (`tests/test_execution_trace.py` — readiness-breakdown summarization, per-step timing, model versioning, all against the real `ml/model_registry.json` rather than hardcoded values), and a 12-case end-to-end harness exercising every intent (real Groq calls where a key is configured — slower and rate-limit-prone, but confirms the whole path works, not just its parts).
 
 ## Known Limitations
 
@@ -133,3 +144,6 @@ Covers the rule engine, analytics tool, ML persistence (including the AST-safe r
 | 2026-07-17 | Fixed `eval()`-based rule evaluation (security hole + a dormant bug — 4 rules using uppercase `AND` had silently never fired since inception) with an AST-whitelist evaluator; added real model persistence (`ml/persistence.py`); wired in the previously-dead `MemoryManager`; added `llm_readiness` gating (mirrors `ml_readiness`) and `ml/feature_validation.py`. |
 | 2026-07-17 | Rebuilt as a full FastAPI + LangGraph service (`app/main.py`, `app/routes/`, `app/agents/analytics_agent/`, `app/services/`) to match Agent 1/2/3's shared architecture, and `Agent-Orchestrator`'s `call_agent3` rewired from a subprocess invocation to a plain `httpx` call — the same shape as its call to Agent 2. The old `main.py`/`tools/`/flat `ml/*.py` CLI structure was retired once the new service was verified working end-to-end. |
 | 2026-07-18 | Added a Postgres schema (`agent3`, same shared instance as Agent 1/2) and moved conversation memory from an in-process, always-empty-per-request list to real cross-request persistence keyed by `conversation_id` — this is what makes the sliding-window filter/KPI carryover actually work in the HTTP world, which it structurally couldn't before. `init_db()` failure is deliberately non-fatal, unlike Agent 1's — memory is an enhancement, not core to answering a question. |
+| 2026-07-18 | Fixed `AnalyticsTool.variance()` computing favorable/unfavorable purely from the arithmetic sign, never reading each KPI's own `higher_is_better` flag (defined in `config/rules/kpi_definitions.json`, required by the schema, but read nowhere in computation code) — every "lower is better" ratio KPI (loss ratio, expense ratio, combined ratio, ...) had its variance direction backwards. |
+| 2026-07-18 | Added `execution_trace`/`execution_summary` to every `POST /analyze` response — a step-by-step decision log (intent → ML gate/engine → LLM gate/engine) built once from the graph's final state rather than touching each of the 7 handler methods. The one real gap it closes: a passed `llm_readiness` gate whose Groq call itself fails is now reported distinctly from a gate that never passed (`ExplanationTool.last_engine_used`, a new observable, makes this possible). |
+| 2026-07-18 | Enriched the trace further: Agent 2's full readiness assessment (not just the bare score) now flows through `Agent-Orchestrator` into `execution_trace`'s gate objects, summarized into a strongest/weakest-factor sentence; real per-step `duration_ms` via `graph.stream(..., stream_mode="updates")` instead of `graph.invoke()`, with zero handler changes; and `model_version` metadata read from `ml/model_registry.json` — Prophet reported as `refit_per_query` (it has no fixed training date) rather than mislabeled with a fake one, IsolationForest/K-Means with an explicit `null` accuracy metric (unsupervised — no number to report) rather than a fabricated one. |
