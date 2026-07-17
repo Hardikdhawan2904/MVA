@@ -14,6 +14,9 @@ Topology:
   fetch_agent2_result ─(stop)───────────────────────────────────────→ END (error)
       │(continue)
       ▼
+  call_agent3 (best-effort — never routes to "stop")
+      │
+      ▼
   finalize → END (success)
 
 Each "stop" branch means a node already populated error_status_code /
@@ -44,6 +47,7 @@ def build_orchestrator_graph():
     g.add_node("extract_domain_and_metadata", _nodes.extract_domain_and_metadata)
     g.add_node("call_agent2", _nodes.call_agent2)
     g.add_node("fetch_agent2_result", _nodes.fetch_agent2_result)
+    g.add_node("call_agent3", _nodes.call_agent3)
     g.add_node("finalize", _nodes.finalize)
 
     g.set_entry_point(get_entry_point())
@@ -62,8 +66,9 @@ def build_orchestrator_graph():
     )
     g.add_conditional_edges(
         "fetch_agent2_result", _nodes.route_after_fetch,
-        {"stop": END, "continue": "finalize"},
+        {"stop": END, "continue": "call_agent3"},
     )
+    g.add_edge("call_agent3", "finalize")
     g.add_edge("finalize", END)
 
     return g.compile()
@@ -82,9 +87,10 @@ async def run_orchestrator_pipeline(
     target_column: str | None = None,
 ) -> dict[str, Any] | JSONResponse:
     """Execute the orchestrator graph. Returns the success dict
-    ({"agent1", "agent2", "primary_domain_used"}) on completion, or a
-    JSONResponse with the same stage/status-code shape the old linear
-    run_pipeline() returned on any failure."""
+    ({"agent1", "agent2", "agent3", "primary_domain_used"}) on completion —
+    "agent3" is null/"skipped" outside its Insurance+business_question+CSV
+    scope — or a JSONResponse with the same stage/status-code shape the old
+    linear run_pipeline() returned on any Agent 1/2 failure."""
     initial_state: PipelineState = {
         "filename": filename,
         "content_type": content_type,

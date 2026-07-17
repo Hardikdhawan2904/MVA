@@ -30,6 +30,9 @@ class PipelineState(TypedDict, total=False):
     run_id: str
     agent2_full_result: dict[str, Any]
 
+    # ── Agent 3 (Analytics Agent — CLI subprocess, best-effort) ────────────
+    agent3_body: dict[str, Any] | None
+
     # ── Output ──────────────────────────────────────────────────────────────
     result: dict[str, Any]
     error_status_code: int

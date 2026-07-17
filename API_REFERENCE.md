@@ -1,8 +1,8 @@
 # MVA Pipeline — API Reference
 
-Two data-intake agents and one orchestrator, each a separate FastAPI service with its own Swagger UI. This doc lists every real endpoint, what it's for, and how to open each service's interactive docs locally.
+Two data-intake agents and one orchestrator, each a separate FastAPI service with its own Swagger UI, plus one optional CLI-based agent (vendored into this repo, sharing its venv) invoked as a subprocess. This doc lists every real endpoint, what it's for, and how to open each service's interactive docs locally.
 
-**Flow:** Upload → Agent 1 *(classify + quality-gate)* → Orchestrator *(relay)* → Agent 2 *(profile + score)* → Combined result
+**Flow:** Upload → Agent 1 *(classify + quality-gate)* → Orchestrator *(relay)* → Agent 2 *(profile + score)* → Agent 3 *(optional, Insurance Q&A)* → Combined result
 
 ---
 
@@ -86,8 +86,29 @@ The one call to make if you just want a file profiled end to end. Sends the uplo
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/pipeline/run` | Runs a file through both agents and returns both results together under one response. Params: `file` (multipart upload), `sheet_name` (required only for multi-sheet Excel workbooks), `force_reclassify` (bool — re-run Agent 1's LLM classification) |
+| `POST` | `/pipeline/run` | Runs a file through both agents and returns all results together under one response. Params: `file` (multipart upload), `sheet_name` (required only for multi-sheet Excel workbooks), `force_reclassify` (bool — re-run Agent 1's LLM classification), `business_question` (optional — also drives Agent 3, see below), `target_column` (optional) |
 | `GET` | `/health` | Liveness check that also reports whether Agent 1 and Agent 2 are currently reachable. |
+
+`/pipeline/run`'s response body is `{"agent1": {...}, "agent2": {...}, "agent3": {...} | null, "primary_domain_used": "..."}`.
+
+### Agent 3 — Analytics Agent (optional third stage)
+
+Vendored into this repo at `Analytics-Agent/` (originally a colleague's separate project, github.com/VirenKhapra/Analytics-agent-for-project-3) — a CLI tool, not an HTTP service, so the orchestrator shells out to it as a subprocess instead of calling it over `httpx`. It installs from the same root `requirements.txt` and runs under the same shared venv as the other three folders. It answers one business question at a time over an Insurance dataset (KPI lookup, variance, root-cause, forecast, anomaly detection, segmentation).
+
+Runs only when **all** of: `primary_domain == "Insurance"`, the upload is a `.csv`, and `business_question` was supplied. Fed Agent 2's `ml_readiness` score (`agent2.readiness_assessments[].score` where `assessment_type == "ml_readiness"`) as `--ml-readiness`. Response shapes:
+
+```jsonc
+// Ran successfully:
+"agent3": {"status": "ok", "query": "...", "ml_readiness_score_used": 39.48, "response": "<narrative text>"}
+
+// Outside its scope (wrong domain / no question / not CSV):
+"agent3": {"status": "skipped", "reason": "..."}
+
+// Invoked but errored/timed out — never fails the overall pipeline:
+"agent3": {"status": "failed", "reason": "..."}
+```
+
+Configured via `Agent-Orchestrator/.env`: `ANALYTICS_AGENT_PATH` (defaults to `Analytics-Agent/` inside this repo), `ANALYTICS_AGENT_PYTHON` (optional override; defaults to the orchestrator's own interpreter, since Agent 3 shares the same venv), `ANALYTICS_AGENT_TIMEOUT_SECONDS`.
 
 ---
 

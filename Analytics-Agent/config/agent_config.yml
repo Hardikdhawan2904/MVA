@@ -1,0 +1,320 @@
+# =============================================================================
+# agent_config.yml
+# Enterprise Insurance Analytics Agent — Full Agent Configuration
+#
+# This file defines:
+#   1. Agent Identity & Role
+#   2. System Prompt (behaviour rules)
+#   3. Conversation History / Memory Settings
+#   4. Tool Registry (which tools are active and in what order)
+#   5. ML Readiness Thresholds
+#   6. Execution Policies
+#   7. Response Format Rules
+# =============================================================================
+
+# ── 1. Agent Identity ─────────────────────────────────────────────────────────
+agent:
+  name: "Insurance Analytics Agent"
+  version: "1.0.0"
+  id: "DS_004_AGENT"
+  description: >
+    Enterprise AI Analytics Agent for the Insurance domain.
+    Answers business questions using deterministic calculations
+    backed by structured data from insurance_variance_data_native.csv.
+  domain: "Insurance"
+  sub_domain: "Risk Management & Underwriting"
+  dataset_id: "DS_004"
+  dataset_name: "insurance_variance_data_native.csv"
+  reporting_currency: "USD"
+  amount_unit: "USD thousands"
+
+# ── 2. Agent Role & Persona ───────────────────────────────────────────────────
+role:
+  title: "Analytics Agent"
+  persona: >
+    You are the Analytics Agent of an Enterprise AI Analytics Platform.
+    You are a precise, evidence-driven business analyst specialising in
+    insurance underwriting performance, variance analysis, and risk reporting.
+    You speak in clear, professional financial language using insurance domain
+    terminology (GWP, NEP, Loss Ratio, Combined Ratio, UWR, IBNR, etc.).
+
+  responsibilities:
+    - "Understand the business request"
+    - "Create an execution plan"
+    - "Decide which analytical tools are required"
+    - "Orchestrate those tools in the correct sequence"
+    - "Validate the returned results"
+    - "Produce an evidence-backed answer"
+
+  NOT_responsible_for:
+    - "Performing calculations directly (delegate to Analytics Tool)"
+    - "Guessing answers (use only evidence from tools)"
+    - "Fabricating business logic (only use Rule Engine facts)"
+    - "Hallucinating numbers (all values must come from SQL Tool results)"
+
+# ── 3. System Prompt ──────────────────────────────────────────────────────────
+system_prompt:
+  core_rules:
+    - "NEVER hallucinate."
+    - "NEVER invent calculations."
+    - "NEVER fabricate business logic."
+    - "NEVER generate explanations without analytical evidence."
+    - "NEVER update the Rule Engine without validation."
+    - "ALWAYS prefer deterministic analysis over language-model reasoning."
+    - "ALWAYS cite specific numbers returned from tools."
+    - "If data cannot answer the question, state what additional data is required."
+
+  response_format:
+    sections:
+      - name: "Summary"
+        description: "One-sentence answer to the business question"
+      - name: "Supporting Evidence"
+        description: "Bullet points of all key metrics, values, and variances"
+      - name: "Root Cause"
+        description: "Driver decomposition (only when causal analysis was performed)"
+      - name: "Confidence"
+        description: "HIGH / MEDIUM / LOW with justification"
+
+  confidence_rules:
+    HIGH:   "All required data present: actuals + comparison + root cause evidence"
+    MEDIUM: "Partial data: actuals present but missing comparison period or driver detail"
+    LOW:    "Limited evidence — missing key columns or insufficient data points"
+
+# ── 4. Conversation History / Memory ─────────────────────────────────────────
+memory:
+  enabled: true
+  type: "sliding_window"           # Options: sliding_window | full | summary
+  max_turns: 10                    # Number of past Q&A turns to retain in context
+  include_tool_calls: false        # Don't bloat context with raw tool call logs
+  include_sql_queries: false       # Hide SQL details from LLM context
+  include_evidence: true           # Always carry forward the numerical evidence
+  summarise_after_turns: 10        # After 10 turns, compress history into summary
+  persistent: false                # Set true to save history to disk between sessions
+  history_file: "data/session_history.json"
+
+  # What to retain from each past turn
+  turn_schema:
+    - field: "turn_id"
+      type: "integer"
+    - field: "user_query"
+      type: "string"
+    - field: "intent_detected"
+      type: "string"
+    - field: "kpi_name"
+      type: "string"
+    - field: "filters_applied"
+      type: "dict"
+    - field: "tools_used"
+      type: "list"
+    - field: "key_evidence"
+      type: "dict"       # Only the computed numbers, not full DataFrames
+    - field: "agent_response_summary"
+      type: "string"
+    - field: "timestamp"
+      type: "datetime"
+
+# ── 5. Tool Registry ──────────────────────────────────────────────────────────
+tools:
+  - id: "rule_engine"
+    name: "Rule Engine Tool"
+    file: "tools/rule_engine.py"
+    class: "RuleEngine"
+    enabled: true
+    priority: 1
+    description: "Loads KPI definitions, formulas, thresholds, and drill-down hierarchies"
+    triggers:
+      - "any KPI lookup required"
+      - "before every calculation"
+      - "when a metric is mentioned in the query"
+
+  - id: "sql_tool"
+    name: "SQL / DuckDB Tool"
+    file: "tools/sql_tool.py"
+    class: "SQLTool"
+    enabled: true
+    priority: 2
+    description: "Executes SQL against the insurance CSV via DuckDB (in-process)"
+    backend: "DuckDB"
+    dataset: "insurance_variance_data_native.csv"
+    triggers:
+      - "after Rule Engine identifies required columns"
+      - "whenever raw data retrieval is needed"
+
+  - id: "analytics_tool"
+    name: "Analytics Tool"
+    file: "tools/analytics_tool.py"
+    class: "AnalyticsTool"
+    enabled: true
+    priority: 3
+    description: "Performs all deterministic calculations: aggregation, variance, growth, ranking"
+    triggers:
+      - "after SQL Tool returns data"
+      - "for all mathematical operations"
+
+  - id: "root_cause_tool"
+    name: "Root Cause Tool"
+    file: "tools/root_cause_tool.py"
+    class: "RootCauseTool"
+    enabled: true
+    priority: 4
+    description: "Decomposes variance into 14 pre-computed drivers and ranks contributors"
+    triggers:
+      - "when query contains: why, reason, cause, driver, impact, contributing"
+
+  - id: "ml_tool"
+    name: "Predictive ML Tool"
+    file: "tools/ml_tool.py"
+    class: "MLTool"
+    enabled: true
+    priority: 5
+    ml_readiness_required: 75
+    description: "Forecasting, anomaly detection, classification, and segmentation"
+    sub_models:
+      - name: "Prophet"
+        use_case: "Time-series forecasting"
+        triggers: ["forecast", "predict", "projection", "next quarter", "future"]
+      - name: "LightGBM"
+        use_case: "Multi-feature regression"
+        triggers: ["predict with features", "multi-driver forecast"]
+      - name: "IsolationForest"
+        use_case: "Anomaly detection on ratios"
+        triggers: ["anomaly", "outlier", "unusual", "spike", "irregular"]
+      - name: "XGBoost"
+        use_case: "Variance driver classification"
+        triggers: ["classify", "which driver", "predict driver"]
+      - name: "KMeans"
+        use_case: "Risk portfolio segmentation"
+        triggers: ["segment", "cluster", "group", "risk tier", "profile"]
+
+  - id: "knowledge_update_tool"
+    name: "Knowledge Update Tool"
+    file: "tools/knowledge_update_tool.py"
+    class: "KnowledgeUpdateTool"
+    enabled: true
+    priority: 6
+    description: "Generates and validates new KPI definitions when Rule Engine has a gap"
+    triggers:
+      - "when Rule Engine returns None for a KPI lookup"
+
+  - id: "explanation_tool"
+    name: "Explanation Tool"
+    file: "tools/explanation_tool.py"
+    class: "ExplanationTool"
+    enabled: true
+    priority: 7
+    description: "Converts analytical evidence to business language using Groq LLM"
+    llm_provider: "Groq"
+    llm_model: "llama-3.3-70b-versatile"
+    llm_temperature: 0.0
+    fallback: "template_formatter"
+    triggers:
+      - "always last — after all evidence is collected"
+
+# ── 6. Execution Plans (Intent → Tool Chain) ──────────────────────────────────
+execution_plans:
+  show_kpi:
+    description: "Display a KPI value with optional comparison"
+    chain: ["rule_engine", "sql_tool", "analytics_tool", "explanation_tool"]
+    example: "Show Gross Written Premium for FY2025"
+
+  variance:
+    description: "Actual vs Budget or Actual vs Prior Year analysis"
+    chain: ["rule_engine", "sql_tool", "analytics_tool", "explanation_tool"]
+    example: "Show loss ratio variance vs budget for EMEA"
+
+  root_cause:
+    description: "Why did a metric change — driver decomposition"
+    chain: ["rule_engine", "sql_tool", "analytics_tool", "root_cause_tool", "explanation_tool"]
+    example: "Why did underwriting result decline in Q2 2025?"
+
+  trend:
+    description: "Time-series trend across periods"
+    chain: ["rule_engine", "sql_tool", "analytics_tool", "explanation_tool"]
+    example: "Show GWP trend over FY2024 and FY2025"
+
+  forecast:
+    description: "Predict future KPI values"
+    chain: ["rule_engine", "sql_tool", "ml_tool", "explanation_tool"]
+    ml_model: "Prophet"
+    readiness_check: true
+    example: "Forecast underwriting result for next 6 months"
+
+  anomaly:
+    description: "Detect ratio outliers"
+    chain: ["sql_tool", "ml_tool", "explanation_tool"]
+    ml_model: "IsolationForest"
+    readiness_check: true
+    example: "Detect anomalies in loss ratios"
+
+  segment:
+    description: "Cluster portfolio into risk profiles"
+    chain: ["sql_tool", "ml_tool", "explanation_tool"]
+    ml_model: "KMeans"
+    readiness_check: true
+    example: "Segment portfolio by risk profile"
+
+  unknown_kpi:
+    description: "KPI not in Rule Engine — trigger knowledge update"
+    chain: ["rule_engine", "knowledge_update_tool", "sql_tool", "analytics_tool", "explanation_tool"]
+    example: "What is our Net Promoter Score?"
+
+# ── 7. ML Readiness Policy ────────────────────────────────────────────────────
+ml_readiness:
+  score: 99.75                   # Passed in from Agent 1 (Data Quality Agent)
+  threshold: 75.0
+  decision: "PASS"
+  authorized_models:
+    - "Prophet"
+    - "LightGBM"
+    - "IsolationForest"
+    - "XGBoost"
+    - "KMeans"
+  fallback_on_failure: "analytics_tool"
+  fallback_message: >
+    ML readiness score is below threshold. Falling back to deterministic
+    trend and variance analysis using the Analytics Tool.
+
+# ── 8. Dataset Context ────────────────────────────────────────────────────────
+dataset_context:
+  id: "DS_004"
+  name: "insurance_variance_data_native.csv"
+  path: "/Users/virenkhapra/Downloads/insurance_variance_data_native.csv"
+  rows: 2000
+  columns: 141
+  quality_score: 99.75
+  temporal_range:
+    start: "2024-01-31"
+    end: "2026-06-30"
+    fiscal_years: ["FY2024", "FY2025", "FY2026"]
+    quarters: ["Q1", "Q2", "Q3", "Q4"]
+  geographies:
+    regions: ["EMEA", "APAC", "Africa", "Middle East"]
+    countries: ["United Kingdom", "Singapore", "India", "Australia", "United Arab Emirates", "South Africa"]
+  insurance_segments: ["General Insurance", "Health", "Specialty"]
+  reporting_currency: "USD"
+  pre_computed_kpis:
+    - "loss_ratio_actual"
+    - "expense_ratio_actual"
+    - "combined_ratio_actual"
+    - "claim_frequency_actual"
+    - "average_claim_severity_actual"
+    - "renewal_rate_actual"
+    - "policy_lapse_rate_actual"
+    - "reserve_adequacy_ratio_actual"
+  pre_computed_variance_drivers: 14
+  ml_labelled_columns:
+    - "primary_variance_driver"
+    - "secondary_variance_driver"
+    - "root_cause_tag"
+    - "structural_vs_timing_flag"
+    - "recurring_flag"
+    - "controllable_flag"
+
+# ── 9. Logging & Audit ────────────────────────────────────────────────────────
+logging:
+  level: "INFO"
+  format: "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+  log_tool_calls: true
+  log_sql_queries: true
+  log_evidence: true
+  audit_trail: true            # Every tool call + result is logged for auditability

@@ -47,8 +47,16 @@ async def run_pipeline(
 
     If Agent 1 rejects the file at its quality gate, the pipeline stops there —
     Agent 2 is never called. If Agent 1's classification isn't one of Agent 2's
-    supported domains (Finance, Payments, Customer, HR), the pipeline stops with a
-    clear error rather than guessing.
+    supported domains (Finance, Payments, Customer, HR, Insurance), the pipeline
+    stops with a clear error rather than guessing.
+
+    3. Agent 3 (Analytics Agent, a colleague's separate CLI-based project) —
+       optional. Only runs when Agent 1 classified the upload as Insurance,
+       the file is a CSV, and a business_question was supplied — it answers
+       exactly that one question using Agent 2's ML-readiness score. Outside
+       that scope it's skipped (`agent3.status == "skipped"`) without
+       affecting Agent 1/2's results; a broken Agent 3 invocation likewise
+       never fails the pipeline (`agent3.status == "failed"` with a reason).
     """
     content = await file.read()
     filename = file.filename or "upload"
