@@ -44,7 +44,10 @@ class ConfigurationRepository:
         return self._load_yaml("quality_weights.yaml")
 
     def get_readiness_weights(self) -> dict[str, Any]:
-        """Load AI readiness weight profiles."""
+        """Load AI readiness weight profiles. Tested (tests/unit/test_config.py)
+        and working, but currently unwired — ReadinessEngine's actual scoring
+        weights are hardcoded in Python instead (see README's Configuration
+        section). Not dead code, just not yet consumed by anything."""
         return self._load_yaml("readiness_weights.yaml")
 
     def get_hierarchy_thresholds(self) -> dict[str, Any]:

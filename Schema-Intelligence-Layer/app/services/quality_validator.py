@@ -284,6 +284,20 @@ class NullHeavyRowsCheck(BaseQualityCheck):
         return max(0.0, achieved_score), warning
 
 
+def _string_values(non_null: pd.Series, exclude_blank: bool = False) -> pd.Series:
+    """Return only the string-typed values from non_null. Shared by
+    CellLengthOutliersCheck and MixedFormatsCheck, which both start from
+    "just the actual text values" before computing their own separate
+    statistic on top. exclude_blank additionally drops whitespace-only
+    strings (MixedFormatsCheck needs this for casing checks; CellLengthOutliersCheck
+    doesn't, since an empty string is still a valid — if extreme — length)."""
+    if exclude_blank:
+        mask = non_null.map(lambda v: isinstance(v, str) and v.strip() != "")
+    else:
+        mask = non_null.map(lambda v: isinstance(v, str))
+    return non_null[mask]
+
+
 def _is_free_text_column(strings: pd.Series, limits: Dict[str, Any]) -> bool:
     """Detects genuine free-text columns (notes, descriptions, addresses) where
     length variance and inconsistent casing are normal, not a data-quality defect —
@@ -312,8 +326,7 @@ class CellLengthOutliersCheck(BaseQualityCheck):
             non_null = df_sample[col].dropna()
             if len(non_null) == 0:
                 continue
-            str_mask = non_null.map(lambda v: isinstance(v, str))
-            strings = non_null[str_mask]
+            strings = _string_values(non_null)
             if len(strings) < 3:
                 continue
 
@@ -354,8 +367,7 @@ class MixedFormatsCheck(BaseQualityCheck):
         casing_consistencies = []
         for col in df_sample.columns:
             non_null = df_sample[col].dropna()
-            str_mask = non_null.map(lambda v: isinstance(v, str) and v.strip() != "")
-            strings = non_null[str_mask].astype(str)
+            strings = _string_values(non_null, exclude_blank=True).astype(str)
             if len(strings) == 0:
                 continue
 

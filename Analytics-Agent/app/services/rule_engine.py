@@ -203,10 +203,6 @@ class RuleEngine:
             return [r for r in self._predefined_rules if r.get("category") == category]
         return self._predefined_rules
 
-    def get_all_rules(self) -> list[dict]:
-        """Return predefined + dynamic rules."""
-        return self._predefined_rules + self._new_rules
-
     def add_new_rule(self, rule: dict) -> bool:
         """
         Add a new rule dynamically (called by Knowledge Update Tool).
@@ -251,22 +247,9 @@ class RuleEngine:
         info = self._variance_drivers.get(driver, {})
         return info.get("description", f"Unknown driver: {driver}")
 
-    def get_all_variance_drivers(self) -> dict:
-        """Return all variance drivers with full metadata."""
-        return self._variance_drivers
-
-    def is_driver_controllable(self, driver: str) -> bool | None:
-        """Return whether a variance driver is controllable by management."""
-        return self._variance_drivers.get(driver, {}).get("controllable")
-
     def get_flag_description(self, flag_column: str, value: str) -> str:
         """Decode a flag value (e.g. structural_vs_timing_flag='S')."""
         return self._flag_decoding.get(flag_column, {}).get(value, value)
-
-    def get_supported_operations(self) -> list[dict]:
-        """Return all supported analytical operations."""
-        return self._supported_ops
-
 
     # ── KPI Lookup ────────────────────────────────────────────────────────────
 
@@ -309,11 +292,6 @@ class RuleEngine:
             "ytd_actual": kpi.get("ytd_actual_column"),
             "ytd_budget": kpi.get("ytd_budget_column"),
         }
-
-    def get_kpi_dependencies(self, kpi_name: str) -> list[str]:
-        """Return the list of KPIs this KPI depends on."""
-        kpi = self.get_kpi(kpi_name)
-        return kpi.get("dependencies", []) if kpi else []
 
     def get_kpi_threshold(self, kpi_name: str) -> dict:
         """Return threshold rules for a KPI if available."""
@@ -369,23 +347,3 @@ class RuleEngine:
             json.dump(all_data, f, indent=2)
         logger.info(f"New KPI added to Rule Engine: '{key}'")
         return True
-
-    # ── Diagnostic ────────────────────────────────────────────────────────────
-
-    def describe(self, kpi_name: str) -> str:
-        """Return a formatted description of a KPI for display."""
-        kpi = self.get_kpi(kpi_name)
-        if not kpi:
-            return f"KPI '{kpi_name}' not found in Rule Engine."
-        lines = [
-            f"KPI: {kpi.get('label', kpi_name)}",
-            f"Formula: {kpi.get('formula', 'N/A')}",
-            f"Unit: {kpi.get('unit', 'N/A')}",
-            f"Category: {kpi.get('category', 'N/A')}",
-            f"Higher is better: {kpi.get('higher_is_better', 'N/A')}",
-        ]
-        if kpi.get("thresholds"):
-            lines.append(f"Thresholds: {kpi['thresholds']}")
-        if kpi.get("dependencies"):
-            lines.append(f"Depends on: {', '.join(kpi['dependencies'])}")
-        return "\n".join(lines)

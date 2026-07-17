@@ -103,7 +103,7 @@ Runs only when **all** of: `primary_domain == "Insurance"`, the upload is a `.cs
 
 ```jsonc
 // Ran successfully:
-"agent3": {"status": "ok", "query": "...", "ml_readiness_score_used": 39.48, "llm_readiness_score_used": 95.77, "response": "<narrative text>"}
+"agent3": {"status": "ok", "query": "...", "conversation_id": "...", "ml_readiness_score_used": 39.48, "llm_readiness_score_used": 95.77, "response": "<narrative text>"}
 
 // Outside its scope (wrong domain / no question / not CSV):
 "agent3": {"status": "skipped", "reason": "..."}
@@ -119,11 +119,11 @@ Configured via `Agent-Orchestrator/.env`: `ANALYTICS_AGENT_BASE_URL` (defaults t
 For a follow-up question against a dataset already run through `/pipeline/run`. Params: `file` (multipart upload — must be re-uploaded; see why below), `business_question` (str), `run_id` (Agent 2's `run_id`, from the earlier `/pipeline/run` response's `agent2.run_id` field). Fetches Agent 2's *already-persisted* result with one lightweight `GET /profile-runs/{run_id}/result` — no new profiling work — then calls Agent 3 directly. Agent 1 never runs at all for this endpoint.
 
 ```jsonc
-{"agent3": {"status": "ok", "query": "...", "response": "...", "ml_readiness_score_used": 29.47, "llm_readiness_score_used": 95.77},
+{"agent3": {"status": "ok", "query": "...", "response": "...", "conversation_id": "...", "ml_readiness_score_used": 29.47, "llm_readiness_score_used": 95.77},
  "primary_domain_used": "Insurance"}
 ```
 
-`agent3.status` behaves exactly as above (`ok` / `skipped` / `failed`). Two error responses are specific to this endpoint (caller mistakes, not "outside Agent 3's scope"): `404` if `run_id` is unknown to Agent 2, `502` if Agent 2 is unreachable.
+`agent3.status` behaves exactly as above (`ok` / `skipped` / `failed`). Two error responses are specific to this endpoint (caller mistakes, not "outside Agent 3's scope"): `404` if `run_id` is unknown to Agent 2, `502` if Agent 2 is unreachable. `agent3.conversation_id` is a fresh one every call — the Orchestrator doesn't track sessions, so this endpoint always starts a new Agent 3 conversation rather than continuing one from a prior `/pipeline/run`/`/pipeline/ask` call.
 
 Requires re-uploading the file because neither Agent 1 nor Agent 2 durably stores raw dataset rows anywhere (Agent 1's dataframe cache is in-memory only; Agent 2 deletes its temp-uploaded copy after every run) — Agent 3 needs real rows to query via DuckDB. Only the readiness scores and feature recommendation, which *are* durably persisted, get reused by `run_id`.
 
@@ -131,10 +131,12 @@ Requires re-uploading the file because neither Agent 1 nor Agent 2 durably store
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/analyze` | Answer one business question against an uploaded CSV. Params: `file` (multipart upload), `business_question` (str), `ml_readiness` (float, default 99.75), `llm_readiness` (float, default 99.75), `feature_recommendation` (optional JSON string — Agent 2's per-column feature classification, used only to validate Agent 3's hardcoded ML feature lists still match this dataset) |
+| `POST` | `/analyze` | Answer one business question against an uploaded CSV. Params: `file` (multipart upload), `business_question` (str), `conversation_id` (optional str — omit for a new conversation; pass back a prior response's `conversation_id` to continue it), `ml_readiness` (float, default 99.75), `llm_readiness` (float, default 99.75), `feature_recommendation` (optional JSON string — Agent 2's per-column feature classification, used only to validate Agent 3's hardcoded ML feature lists still match this dataset) |
 | `GET` | `/health` | Liveness check — Agent 3 has no downstream agents to ping. |
 
-A standalone local-testing CLI is also available without running the HTTP server: `Analytics-Agent/scripts/cli.py --query "..."` (reads the reference dataset configured via `Analytics-Agent/.env`'s `DATASET_PATH`).
+`conversation_id` is always present in the response, generated fresh if the caller didn't supply one. Conversation memory (filter/KPI carryover, LLM prior-turn context) is persisted in Postgres (`agent3` schema on the same [`Shared-Postgres`](../Shared-Postgres) instance Agent 1/2 use) keyed by this id — non-fatal if that database is unreachable, degrading to a single-turn, non-persistent answer rather than failing the request. The Orchestrator never passes `conversation_id` (`/pipeline/run` and `/pipeline/ask` are both stateless), so multi-turn continuity only applies when calling `POST /analyze` directly.
+
+A standalone local-testing CLI is also available without running the HTTP server: `Analytics-Agent/scripts/cli.py --query "..."` (reads the reference dataset configured via `Analytics-Agent/.env`'s `DATASET_PATH`); `--interactive` mode reuses one `conversation_id` across the whole session.
 
 ---
 

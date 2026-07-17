@@ -130,6 +130,7 @@ class AnalyticsGraphNodes:
     def __init__(
         self,
         dataset_path: str,
+        conversation_id: str,
         ml_readiness_score: float = 99.75,
         llm_readiness_score: float = 99.75,
         feature_recommendation: list[dict] | None = None,
@@ -143,7 +144,7 @@ class AnalyticsGraphNodes:
         self.explanation = ExplanationTool(llm_readiness_score)
         self.knowledge   = KnowledgeUpdateTool(self.rule_engine)
         self.ml          = MLTool(ml_readiness_score)
-        self.memory      = MemoryManager()
+        self.memory      = MemoryManager(conversation_id)
         self.exec_plans  = get_execution_plans()
 
     # ── Intent / Filter Detection (entry node) ──────────────────────────────

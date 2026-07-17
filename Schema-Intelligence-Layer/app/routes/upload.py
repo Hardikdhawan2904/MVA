@@ -6,6 +6,7 @@ import logging
 from fastapi import APIRouter, UploadFile, File, HTTPException, Query
 from fastapi.responses import JSONResponse
 
+from app.config import settings
 from app.models.schemas import UploadResponse, DatasetMetadata, DatasetListItem
 from app.agents.schema_intelligence_agent.graph import run_schema_intelligence_graph
 from app.services.database import get_metadata, list_all_metadata
@@ -23,6 +24,7 @@ router = APIRouter()
     description="Accepts a CSV or Excel file, validates it, persists/appends it in its dedicated PostgreSQL database, and registers/classifies its metadata.",
     responses={
         400: {"description": "File unreadable or corrupted"},
+        413: {"description": "File exceeds MAX_UPLOAD_SIZE_MB"},
         415: {"description": "Unsupported file format"},
         422: {"description": "Empty dataset or invalid structure"},
         500: {"description": "Internal processing error"},
@@ -50,6 +52,14 @@ async def upload_dataset(
     filename = file.filename
     content = await file.read()
     logger.info(f"Received upload: {filename} ({len(content)} bytes)")
+
+    max_bytes = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
+    if len(content) > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File exceeds the maximum upload size of {settings.MAX_UPLOAD_SIZE_MB}MB "
+                   f"(got {len(content) / (1024 * 1024):.1f}MB).",
+        )
 
     result = run_schema_intelligence_graph(
         filename=filename,

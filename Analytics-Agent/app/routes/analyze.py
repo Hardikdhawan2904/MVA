@@ -22,6 +22,12 @@ router = APIRouter(tags=["Analytics"])
 async def analyze(
     file: UploadFile = File(..., description="Insurance CSV dataset to answer the question against"),
     business_question: str = Form(..., description="The business question to answer"),
+    conversation_id: str | None = Form(
+        default=None,
+        description="Omit for a new conversation (a fresh id is generated and returned in the response). "
+                    "Pass back the conversation_id from a prior response to continue it — filter/KPI "
+                    "carryover ('what about EMEA?') and the LLM's prior-turn context both depend on this.",
+    ),
     ml_readiness: float = Form(
         default=99.75,
         description="ML readiness score from Agent 2 — gates ML model execution vs. the deterministic fallback",
@@ -48,6 +54,7 @@ async def analyze(
     result = run_analytics_graph(
         file_content=content,
         business_question=business_question,
+        conversation_id=conversation_id,
         ml_readiness_score=ml_readiness,
         llm_readiness_score=llm_readiness,
         feature_recommendation=parsed_feature_recommendation,

@@ -12,5 +12,6 @@ class AnalysisResponse(BaseModel):
     status: str
     query: str
     response: str
+    conversation_id: str | None = None
     ml_readiness_score_used: float | None = None
     llm_readiness_score_used: float | None = None

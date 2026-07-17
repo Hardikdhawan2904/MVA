@@ -89,8 +89,8 @@ memory:
   include_sql_queries: false       # Hide SQL details from LLM context
   include_evidence: true           # Always carry forward the numerical evidence
   summarise_after_turns: 10        # After 10 turns, compress history into summary
-  persistent: false                # Set true to save history to disk between sessions
-  history_file: "data/session_history.json"
+  # Persistence is always on now — conversation_turns table in Postgres
+  # (agent3 schema), keyed by conversation_id. See app/services/database.py.
 
   # What to retain from each past turn
   turn_schema:

@@ -3,13 +3,11 @@ Agent's LangGraph, for exercising it without the HTTP server running.
 
 Reads the dataset from app.config.DATASET_PATH (the .env-configured
 reference dataset) instead of an upload. Each query calls
-run_analytics_graph() fresh — same as a real HTTP request — so, unlike the
-old CLI's AnalyticsAgent (constructed once, reused across an interactive
-session), conversation memory does NOT carry over between turns here. That
-statefulness only makes sense for a long-lived process serving one
-conversation at a time; a per-request FastAPI service, and this CLI, use
-the same fresh-per-call code path deliberately for consistency, trading
-away multi-turn memory in exchange for one code path instead of two.
+run_analytics_graph() fresh — same as a real HTTP request — but conversation
+memory now persists to Postgres (app/services/memory.py), so --interactive
+mode generates one conversation_id at startup and reuses it across turns,
+carrying filter/KPI context forward the same way a real client passing the
+same conversation_id back on each POST /analyze call would.
 """
 
 import argparse
@@ -25,17 +23,22 @@ from app.agents.analytics_agent.graph import run_analytics_graph
 from app.config import DATASET_PATH
 
 
-def _ask(query: str, ml_readiness: float, llm_readiness: float, file_content: bytes) -> None:
+def _ask(
+    query: str, ml_readiness: float, llm_readiness: float, file_content: bytes,
+    conversation_id: str | None = None,
+) -> str:
     print(f"\n{'=' * 70}")
     print(f"Query: {query}")
     print(f"{'=' * 70}\n")
     result = run_analytics_graph(
         file_content=file_content,
         business_question=query,
+        conversation_id=conversation_id,
         ml_readiness_score=ml_readiness,
         llm_readiness_score=llm_readiness,
     )
     print(result["response"])
+    return result["conversation_id"]
 
 
 def main():
@@ -70,6 +73,7 @@ Examples:
     if args.interactive:
         print("\nEnterprise Insurance Analytics Agent (standalone CLI)")
         print("   Type 'exit' or 'quit' to stop.\n")
+        conversation_id = None
         while True:
             try:
                 query = input("You: ").strip()
@@ -78,7 +82,7 @@ Examples:
                     break
                 if not query:
                     continue
-                _ask(query, args.ml_readiness, args.llm_readiness, file_content)
+                conversation_id = _ask(query, args.ml_readiness, args.llm_readiness, file_content, conversation_id)
             except KeyboardInterrupt:
                 print("\nGoodbye.")
                 break

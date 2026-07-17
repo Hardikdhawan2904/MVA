@@ -226,25 +226,18 @@ The Profiling Layer can then download and ingest it using `pd.read_parquet(stora
 ## 5. Local Setup & Usage
 
 ### 1. Environment Configuration
-Create a `.env` file in the project root directory and add the following configuration:
+`GROQ_API_KEY` and the `POSTGRES_*` connection details now come from the shared **repo-root** `.env` (`../.env`, copy from `../.env.example`) — see the [root README](../README.md#quick-start). Only this service's own genuinely-local override lives here; create a `.env` in this directory only if you need one:
 
 ```env
-# Groq API Configuration
-GROQ_API_KEY=your_groq_api_key_here
+# Groq API Configuration — a different (cheaper) model than Agent 3's, so
+# this stays local rather than in the shared root .env.
 GROQ_MODEL=llama-3.1-8b-instant
-
-# Database Configuration
-POSTGRES_HOST=localhost
-POSTGRES_PORT=5433
-POSTGRES_DB=mva_pipeline
-POSTGRES_USER=postgres
-POSTGRES_PASSWORD=postgres
 ```
 
 #### Parameters:
-*   `GROQ_API_KEY`: Your private Groq Cloud developer token (obtain one from the [Groq Console](https://console.groq.com/keys)). This token is utilized to run LLM description and classification tasks.
-*   `GROQ_MODEL`: The target inference model (defaults to `llama-3.1-8b-instant`).
-*   `POSTGRES_HOST` / `POSTGRES_PORT` / `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD`: Connection details for the PostgreSQL metadata catalog. This service shares a single Postgres server with the other agents in the pipeline — its tables live in the `agent1` schema of the `mva_pipeline` database, kept isolated from other agents' tables by schema, not by a separate database.
+*   `GROQ_API_KEY` *(root `.env`)*: Your private Groq Cloud developer token (obtain one from the [Groq Console](https://console.groq.com/keys)). This token is utilized to run LLM description and classification tasks.
+*   `GROQ_MODEL` *(this service's own `.env`)*: The target inference model (defaults to `llama-3.1-8b-instant`).
+*   `POSTGRES_HOST` / `POSTGRES_PORT` / `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD` *(root `.env`)*: Connection details for the PostgreSQL metadata catalog. This service shares a single Postgres server with the other agents in the pipeline — its tables live in the `agent1` schema of the `mva_pipeline` database, kept isolated from other agents' tables by schema, not by a separate database.
 
 ### 2. Start PostgreSQL
 Postgres for this whole pipeline (all agents) runs from a shared location, not from this repo:

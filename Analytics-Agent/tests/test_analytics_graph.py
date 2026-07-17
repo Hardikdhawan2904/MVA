@@ -11,6 +11,7 @@ test_harness.py's response-content assertions).
 """
 
 import sys
+import uuid
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -28,7 +29,7 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(scope="module")
 def nodes():
-    return AnalyticsGraphNodes(dataset_path=str(_DATASET))
+    return AnalyticsGraphNodes(dataset_path=str(_DATASET), conversation_id=str(uuid.uuid4()))
 
 
 # ── route_by_intent ──────────────────────────────────────────────────────────
@@ -63,7 +64,7 @@ def test_route_after_handler_evidence_goes_to_narrate(nodes):
 # ── Graph compilation ─────────────────────────────────────────────────────────
 
 def test_graph_builds_and_compiles():
-    graph = build_analytics_graph(dataset_path=str(_DATASET))
+    graph = build_analytics_graph(dataset_path=str(_DATASET), conversation_id=str(uuid.uuid4()))
     # A compiled LangGraph exposes .invoke — presence confirms compile() succeeded.
     assert hasattr(graph, "invoke")
 
@@ -80,9 +81,10 @@ def test_graph_builds_and_compiles():
     ("Segment portfolio by risk profile", "segment"),
 ])
 def test_end_to_end_intent_routing(query, expected_intent):
-    graph = build_analytics_graph(dataset_path=str(_DATASET))
+    conversation_id = str(uuid.uuid4())
+    graph = build_analytics_graph(dataset_path=str(_DATASET), conversation_id=conversation_id)
     final_state = graph.invoke(
-        {"business_question": query, "dataset_path": str(_DATASET)},
+        {"business_question": query, "dataset_path": str(_DATASET), "conversation_id": conversation_id},
         config={"recursion_limit": 25},
     )
     assert final_state["intent"] == expected_intent

@@ -3,31 +3,24 @@ factory function since each run's column profiles/dataframe differ — there's
 no shared global state a plain module-level @tool could safely close over.
 """
 
-from typing import Any
-
 import pandas as pd
 from langchain_core.tools import tool
+
+from app.agents._shared.column_tools import build_get_column_statistics_tool, tools_to_registry
+
+__all__ = ["build_feature_target_tools", "tools_to_registry"]
 
 
 def build_feature_target_tools(col_profiles: list, df: pd.DataFrame) -> list:
     """
-    Tools available to the feature-target LLM. Both mirror the equivalent
-    rule_suggestion_agent tools — the agent already receives every column's
-    role/semantic-type/statistics summary up front, these are only for
-    drilling into a specific candidate target column before committing to a
-    problem_type (e.g. confirming it's genuinely binary/categorical rather
-    than continuous).
+    Tools available to the feature-target LLM. get_column_statistics mirrors
+    the equivalent rule_suggestion_agent tool exactly (shared implementation);
+    check_value_distribution is agent-specific — the agent already receives
+    every column's role/semantic-type/statistics summary up front, this is
+    only for drilling into a specific candidate target column before
+    committing to a problem_type (e.g. confirming it's genuinely
+    binary/categorical rather than continuous).
     """
-    profiles_by_name = {p.physical_name: p for p in col_profiles}
-
-    @tool
-    def get_column_statistics(column_name: str) -> str:
-        """Get the full statistics for a specific column by its physical name."""
-        profile = profiles_by_name.get(column_name)
-        if profile is None:
-            return f"Column '{column_name}' not found. Available columns: {list(profiles_by_name.keys())}"
-        return str(profile.to_statistics_dict())
-
     @tool
     def check_value_distribution(column_name: str) -> str:
         """Get the full distinct-value distribution (value counts) for a
@@ -39,10 +32,4 @@ def build_feature_target_tools(col_profiles: list, df: pd.DataFrame) -> list:
         counts = df[column_name].value_counts(dropna=True).head(20)
         return f"Value distribution for '{column_name}' (top 20): {counts.to_dict()}"
 
-    return [get_column_statistics, check_value_distribution]
-
-
-def tools_to_registry(tools: list) -> dict[str, Any]:
-    """Build a name->tool lookup so agent.yaml's agent_tools list (names only)
-    can be resolved into actual callables at graph-build time."""
-    return {t.name: t for t in tools}
+    return [build_get_column_statistics_tool(col_profiles), check_value_distribution]

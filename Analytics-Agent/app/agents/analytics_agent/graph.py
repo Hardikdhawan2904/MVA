@@ -25,6 +25,7 @@ MVA-use-case-latest-one's request-scoped graph construction.
 
 import logging
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,7 @@ _HANDLER_INTENTS = ("show_kpi", "variance", "root_cause", "trend", "forecast", "
 
 def build_analytics_graph(
     dataset_path: str,
+    conversation_id: str,
     ml_readiness_score: float = 99.75,
     llm_readiness_score: float = 99.75,
     feature_recommendation: list[dict] | None = None,
@@ -49,6 +51,7 @@ def build_analytics_graph(
     module docstring."""
     nodes = AnalyticsGraphNodes(
         dataset_path=dataset_path,
+        conversation_id=conversation_id,
         ml_readiness_score=ml_readiness_score,
         llm_readiness_score=llm_readiness_score,
         feature_recommendation=feature_recommendation,
@@ -91,6 +94,7 @@ def build_analytics_graph(
 def run_analytics_graph(
     file_content: bytes,
     business_question: str,
+    conversation_id: str | None = None,
     ml_readiness_score: float = 99.75,
     llm_readiness_score: float = 99.75,
     feature_recommendation: list[dict] | None = None,
@@ -102,7 +106,12 @@ def run_analytics_graph(
     a reference to it once this returns), and turns any failure into a
     status="error" result instead of raising — app/routes/analyze.py doesn't
     need its own try/except around this call.
+
+    conversation_id ties this call's memory to any prior turns — if omitted,
+    a fresh one is generated (new conversation) and always returned in the
+    result so the caller can pass it back on the next turn.
     """
+    conversation_id = conversation_id or str(uuid.uuid4())
     tmp_path: str | None = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as tmp:
@@ -111,6 +120,7 @@ def run_analytics_graph(
 
         graph = build_analytics_graph(
             dataset_path=tmp_path,
+            conversation_id=conversation_id,
             ml_readiness_score=ml_readiness_score,
             llm_readiness_score=llm_readiness_score,
             feature_recommendation=feature_recommendation,
@@ -119,6 +129,7 @@ def run_analytics_graph(
         initial_state: AnalyticsState = {
             "business_question": business_question,
             "dataset_path": tmp_path,
+            "conversation_id": conversation_id,
             "ml_readiness_score": ml_readiness_score,
             "llm_readiness_score": llm_readiness_score,
             "feature_recommendation": feature_recommendation,
@@ -130,6 +141,7 @@ def run_analytics_graph(
             "status": "ok",
             "query": business_question,
             "response": final_state.get("response", ""),
+            "conversation_id": conversation_id,
             "ml_readiness_score_used": ml_readiness_score,
             "llm_readiness_score_used": llm_readiness_score,
         }
@@ -139,6 +151,7 @@ def run_analytics_graph(
             "status": "error",
             "query": business_question,
             "response": f"Analytics Agent failed: {e}",
+            "conversation_id": conversation_id,
             "ml_readiness_score_used": ml_readiness_score,
             "llm_readiness_score_used": llm_readiness_score,
         }

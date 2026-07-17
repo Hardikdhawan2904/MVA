@@ -61,7 +61,10 @@ Each has its own README going deeper on that piece specifically — this file is
    .\venv\Scripts\activate
    pip install -r requirements.txt -r requirements-dev.txt
    ```
-2. Each of `Schema-Intelligence-Layer`, `MVA-use-case-latest-one`, `Agent-Orchestrator`, and `Analytics-Agent` still needs its own `.env` file (copy from `.env.example` in each) — Agent 1, Agent 2, and Agent 3 need a Groq API key for LLM features; the orchestrator needs none.
+2. Two layers of `.env` files:
+   - **Root** (`cp .env.example .env`, fill in `GROQ_API_KEY`): shared values genuinely identical across Agent 1, Agent 3, and the Orchestrator — `GROQ_API_KEY`, the `POSTGRES_*` connection details, `LOG_LEVEL`. Each of those three services loads this as a fallback *underneath* its own local `.env` (local always wins on any key both define).
+   - **Per-service** (`cp .env.example .env` inside `Schema-Intelligence-Layer/`, `Agent-Orchestrator/`, and `Analytics-Agent/`): only what's genuinely local to that service — e.g. Agent 1's `GROQ_MODEL` override, Agent 3's `DATASET_PATH`/`HOST`/`PORT`, the Orchestrator's `AGENT1_BASE_URL`/`AGENT2_BASE_URL`/etc.
+   - `MVA-use-case-latest-one` (Agent 2) is the exception — it has its own differently-shaped config (`DATABASE_URL`, `LLM_API_KEY`, a separate Postgres role) and keeps its own fully self-contained `.env`, untouched by the root file.
 3. Start everything at once:
 
 ```powershell

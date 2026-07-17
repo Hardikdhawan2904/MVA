@@ -33,6 +33,16 @@ def _get_groq_client() -> Groq:
     return Groq(api_key=settings.GROQ_API_KEY)
 
 
+def _strip_json_fences(response_text: str) -> str:
+    """Strip a markdown code fence (```json ... ``` or ``` ... ```) that Groq
+    sometimes wraps its JSON response in, despite being asked for JSON only."""
+    if response_text.startswith("```"):
+        response_text = response_text.strip("`").strip()
+        if response_text.startswith("json"):
+            response_text = response_text[4:].strip()
+    return response_text
+
+
 def _build_metadata_context(metadata: DatasetMetadata) -> str:
     """
     Build a text summary of dataset metadata for the LLM prompt.
@@ -91,15 +101,7 @@ def _generate_column_descriptions_batch(
             max_tokens=2000,
         )
 
-        response_text = response.choices[0].message.content.strip()
-
-        # Parse JSON response — handle possible markdown code fences
-        if response_text.startswith("```"):
-            # Strip markdown code fences
-            response_text = response_text.strip("`").strip()
-            if response_text.startswith("json"):
-                response_text = response_text[4:].strip()
-
+        response_text = _strip_json_fences(response.choices[0].message.content.strip())
         descriptions = json.loads(response_text)
 
         return {col: descriptions.get(col, f"Column '{col}' in the dataset.") for col in batch_names}
@@ -189,14 +191,7 @@ def classify_dataset(metadata: DatasetMetadata) -> LLMClassification:
             max_tokens=500,
         )
 
-        response_text = response.choices[0].message.content.strip()
-
-        # Parse JSON response — handle possible markdown code fences
-        if response_text.startswith("```"):
-            response_text = response_text.strip("`").strip()
-            if response_text.startswith("json"):
-                response_text = response_text[4:].strip()
-
+        response_text = _strip_json_fences(response.choices[0].message.content.strip())
         result = json.loads(response_text)
 
         # Retrieve classification from LLM response (fallback to defaults if empty/missing)

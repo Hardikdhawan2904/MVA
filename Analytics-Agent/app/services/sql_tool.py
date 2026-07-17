@@ -241,16 +241,3 @@ class SQLTool:
             ORDER BY {group_by_col}
         """
         return self.query(sql, parameters=params or None)
-
-    def get_distinct_values(self, column: str) -> list:
-        """Return sorted list of distinct values for a column."""
-        df = self.query(f"SELECT DISTINCT {column} FROM insurance ORDER BY {column}")
-        return df[column].tolist()
-
-    def get_schema(self) -> pd.DataFrame:
-        """Return the dataset schema (column names and types)."""
-        return self.query("DESCRIBE SELECT * FROM insurance")
-
-    def row_count(self) -> int:
-        """Return total row count."""
-        return self.query("SELECT COUNT(*) AS cnt FROM insurance")["cnt"].iloc[0]

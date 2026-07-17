@@ -4,29 +4,23 @@ differ — there's no shared global state a plain module-level @tool could
 safely close over.
 """
 
-from typing import Any
-
 import pandas as pd
 from langchain_core.tools import tool
+
+from app.agents._shared.column_tools import build_get_column_statistics_tool, tools_to_registry
+
+__all__ = ["build_rule_suggestion_tools", "tools_to_registry"]
 
 
 def build_rule_suggestion_tools(col_profiles: list, df: pd.DataFrame, existing_rule_keys: list[str]) -> list:
     """
-    Tools available to the rule-suggestion LLM. Includes a genuinely new
-    capability this pipeline didn't have before: checking which rules already
-    exist (YAML-configured + previously approved) so it doesn't propose
-    duplicates of rules that are already active for this domain.
+    Tools available to the rule-suggestion LLM. get_column_statistics mirrors
+    the equivalent feature_target_agent tool exactly (shared implementation).
+    check_existing_rules is a genuinely new capability this pipeline didn't
+    have before: checking which rules already exist (YAML-configured +
+    previously approved) so it doesn't propose duplicates of rules that are
+    already active for this domain.
     """
-    profiles_by_name = {p.physical_name: p for p in col_profiles}
-
-    @tool
-    def get_column_statistics(column_name: str) -> str:
-        """Get the full statistics for a specific column by its physical name."""
-        profile = profiles_by_name.get(column_name)
-        if profile is None:
-            return f"Column '{column_name}' not found. Available columns: {list(profiles_by_name.keys())}"
-        return str(profile.to_statistics_dict())
-
     @tool
     def check_value_distribution(column_name: str) -> str:
         """Get the full distinct-value distribution (value counts) for a column
@@ -46,10 +40,4 @@ def build_rule_suggestion_tools(col_profiles: list, df: pd.DataFrame, existing_r
             return "No rules are currently active for this domain."
         return f"Already-active rule keys (do not duplicate these): {existing_rule_keys}"
 
-    return [get_column_statistics, check_value_distribution, check_existing_rules]
-
-
-def tools_to_registry(tools: list) -> dict[str, Any]:
-    """Build a name->tool lookup so agent.yaml's agent_tools list (names only)
-    can be resolved into actual callables at graph-build time."""
-    return {t.name: t for t in tools}
+    return [build_get_column_statistics_tool(col_profiles), check_value_distribution, check_existing_rules]

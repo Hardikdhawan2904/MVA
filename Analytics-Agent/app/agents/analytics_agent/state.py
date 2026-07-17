@@ -14,6 +14,7 @@ class AnalyticsState(TypedDict, total=False):
     # ── Inputs (set once, at graph invocation) ──────────────────────────────
     business_question: str
     dataset_path: str                    # temp CSV path for this request
+    conversation_id: str                 # ties this request's memory to prior turns
     ml_readiness_score: float
     llm_readiness_score: float
     feature_recommendation: list[dict] | None

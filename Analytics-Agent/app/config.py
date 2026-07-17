@@ -17,7 +17,10 @@ Priority order for settings:
   2. config/ml_config.yml                  — all ML model settings (swappable)
   3. config/business_rules.yml             — predefined insurance rules + new rules
   4. .env                                  — secrets (API keys), HOST/PORT
-  5. Hardcoded defaults below              — last resort fallback
+  5. ../.env (repo root)                   — GROQ_API_KEY/POSTGRES_*/LOG_LEVEL shared with
+                                              Agent 1/Orchestrator, fallback only — this
+                                              service's own .env always wins on conflicts
+  6. Hardcoded defaults below              — last resort fallback
 """
 
 import os
@@ -25,6 +28,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 import yaml
 
+# Local .env first — load_dotenv() never overwrites a key already set, so
+# loading local before root is what makes local win on any key both define.
 load_dotenv()
 
 # ── Base Paths ────────────────────────────────────────────────────────────────
@@ -33,6 +38,11 @@ load_dotenv()
 BASE_DIR   = Path(__file__).parent.parent
 CONFIG_DIR = BASE_DIR / "config"
 DATA_DIR   = BASE_DIR / "data"
+
+# Root .env (GROQ_API_KEY, POSTGRES_*, LOG_LEVEL shared with Agent 1/
+# Orchestrator) — loaded after local, so it only fills in keys local didn't
+# already set. See this module's docstring for the full priority order.
+load_dotenv(BASE_DIR.parent / ".env")
 ML_DIR     = BASE_DIR / "ml"
 RULES_DIR  = CONFIG_DIR / "rules"
 AGENT_YAML_PATH = BASE_DIR / "app" / "agents" / "analytics_agent" / "agent.yaml"
@@ -48,6 +58,14 @@ DATASET_PATH = Path(os.getenv(
 # ── Service host/port ──────────────────────────────────────────────────────────
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8003"))
+
+# ── Shared Postgres (conversation memory only — same instance/DB as Agent 1/2,
+# own "agent3" schema) ────────────────────────────────────────────────────────
+POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
+POSTGRES_PORT = int(os.getenv("POSTGRES_PORT", "5433"))
+POSTGRES_DB = os.getenv("POSTGRES_DB", "mva_pipeline")
+POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")
+POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "postgres")
 
 # ── YAML Loaders ──────────────────────────────────────────────────────────────
 def _load_yaml(path: Path) -> dict:
@@ -115,7 +133,7 @@ FORECAST_PERIODS = int(
 )
 
 # ── Logging ────────────────────────────────────────────────────────────────────
-LOG_LEVEL  = "INFO"
+LOG_LEVEL  = os.getenv("LOG_LEVEL", "INFO")
 LOG_FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
 
 # ── Reporting ──────────────────────────────────────────────────────────────────
