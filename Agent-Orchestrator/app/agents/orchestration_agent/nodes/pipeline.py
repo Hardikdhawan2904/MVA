@@ -71,12 +71,14 @@ async def _analyze_via_agent3(
     ml_score: float | None,
     llm_score: float | None,
     feature_columns: list,
+    ml_breakdown: dict | None = None,
+    llm_breakdown: dict | None = None,
 ) -> dict[str, Any]:
     """The actual call to Agent 3's POST /analyze. Shared by the full
     pipeline's call_agent3 node and the /pipeline/ask route — same request
     shape either way, they just differ in where ml_score/llm_score/
-    feature_columns come from (a run just completed vs. re-fetched from
-    Agent 2's persisted result by run_id)."""
+    feature_columns/breakdowns come from (a run just completed vs.
+    re-fetched from Agent 2's persisted result by run_id)."""
     url = f"{settings.ANALYTICS_AGENT_BASE_URL}/analyze"
     data = {"business_question": business_question}
     if ml_score is not None:
@@ -85,6 +87,10 @@ async def _analyze_via_agent3(
         data["llm_readiness"] = llm_score
     if feature_columns:
         data["feature_recommendation"] = json.dumps(feature_columns)
+    if ml_breakdown:
+        data["ml_readiness_breakdown"] = json.dumps(ml_breakdown)
+    if llm_breakdown:
+        data["llm_readiness_breakdown"] = json.dumps(llm_breakdown)
 
     try:
         async with httpx.AsyncClient() as client:
@@ -105,19 +111,29 @@ async def _analyze_via_agent3(
     return agent3_body
 
 
-def _readiness_and_features(agent2_full_result: dict) -> tuple[float | None, float | None, list]:
-    """Extract (ml_score, llm_score, feature_columns) from Agent 2's full
-    result — shared by call_agent3 and /pipeline/ask, same extraction
-    either way."""
+def _readiness_and_features(
+    agent2_full_result: dict,
+) -> tuple[float | None, float | None, list, dict | None, dict | None]:
+    """Extract (ml_score, llm_score, feature_columns, ml_breakdown, llm_breakdown)
+    from Agent 2's full result — shared by call_agent3 and /pipeline/ask,
+    same extraction either way.
+
+    ml_breakdown/llm_breakdown are the full readiness assessment dicts
+    (strengths, blocking_issues, evidence, recommendations,
+    weight_profile_version) — Agent 2's ReadinessEngine already computes
+    these, but until now only the bare score float was ever forwarded to
+    Agent 3, so it could never explain *why* a gate passed or failed."""
     readiness_assessments = (agent2_full_result or {}).get("readiness_assessments", [])
-    ml_score = next(
-        (r.get("score") for r in readiness_assessments if r.get("assessment_type") == "ml_readiness"), None,
+    ml_assessment = next(
+        (r for r in readiness_assessments if r.get("assessment_type") == "ml_readiness"), None,
     )
-    llm_score = next(
-        (r.get("score") for r in readiness_assessments if r.get("assessment_type") == "llm_readiness"), None,
+    llm_assessment = next(
+        (r for r in readiness_assessments if r.get("assessment_type") == "llm_readiness"), None,
     )
+    ml_score = ml_assessment.get("score") if ml_assessment else None
+    llm_score = llm_assessment.get("score") if llm_assessment else None
     feature_columns = (agent2_full_result or {}).get("feature_recommendation", {}).get("feature_columns") or []
-    return ml_score, llm_score, feature_columns
+    return ml_score, llm_score, feature_columns, ml_assessment, llm_assessment
 
 
 class OrchestratorGraphNodes:
@@ -308,10 +324,12 @@ class OrchestratorGraphNodes:
         if skip_reason:
             return {"agent3_body": {"status": "skipped", "reason": skip_reason}}
 
-        ml_score, llm_score, feature_columns = _readiness_and_features(state.get("agent2_full_result"))
+        ml_score, llm_score, feature_columns, ml_breakdown, llm_breakdown = _readiness_and_features(
+            state.get("agent2_full_result"),
+        )
         agent3_body = await _analyze_via_agent3(
             business_question, state["filename"], state["content"], state["content_type"],
-            ml_score, llm_score, feature_columns,
+            ml_score, llm_score, feature_columns, ml_breakdown, llm_breakdown,
         )
         return {"agent3_body": agent3_body}
 

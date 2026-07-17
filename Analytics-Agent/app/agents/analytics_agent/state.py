@@ -18,6 +18,13 @@ class AnalyticsState(TypedDict, total=False):
     ml_readiness_score: float
     llm_readiness_score: float
     feature_recommendation: list[dict] | None
+    # Agent 2's full readiness assessments (strengths, blocking_issues,
+    # evidence) — optional, since a direct /analyze call outside the
+    # Orchestrator has no way to supply them. Read by graph.py's
+    # _build_execution_trace to explain *why* a readiness gate passed or
+    # failed, not just report the bare score.
+    ml_readiness_breakdown: dict | None
+    llm_readiness_breakdown: dict | None
 
     # ── Derived by detect_intent_and_filters ────────────────────────────────
     intent: str

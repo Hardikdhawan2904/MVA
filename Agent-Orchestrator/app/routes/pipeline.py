@@ -144,8 +144,9 @@ async def ask_agent3(
             "primary_domain_used": primary_domain,
         }
 
-    ml_score, llm_score, feature_columns = _readiness_and_features(agent2_full_result)
+    ml_score, llm_score, feature_columns, ml_breakdown, llm_breakdown = _readiness_and_features(agent2_full_result)
     agent3_body = await _analyze_via_agent3(
-        business_question, filename, content, content_type, ml_score, llm_score, feature_columns,
+        business_question, filename, content, content_type,
+        ml_score, llm_score, feature_columns, ml_breakdown, llm_breakdown,
     )
     return {"agent3": agent3_body, "primary_domain_used": primary_domain}

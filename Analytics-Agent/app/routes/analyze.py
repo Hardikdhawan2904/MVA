@@ -42,12 +42,30 @@ async def analyze(
                     "upload — used only to validate the hardcoded ML feature column lists still match "
                     "this dataset's schema; never blocks the request if omitted or malformed.",
     ),
+    ml_readiness_breakdown: str | None = Form(
+        default=None,
+        description="Optional JSON string of Agent 2's full ml_readiness assessment (strengths, "
+                    "blocking_issues, evidence) — surfaced in execution_trace so the ml_readiness gate "
+                    "can explain *why*, not just report the score. Never blocks the request if omitted "
+                    "or malformed.",
+    ),
+    llm_readiness_breakdown: str | None = Form(
+        default=None,
+        description="Same as ml_readiness_breakdown, for Agent 2's llm_readiness assessment.",
+    ),
 ) -> AnalysisResponse:
-    try:
-        parsed_feature_recommendation = json.loads(feature_recommendation) if feature_recommendation else None
-    except json.JSONDecodeError:
-        logger.warning("feature_recommendation Form field was not valid JSON — ignoring it.")
-        parsed_feature_recommendation = None
+    def _parse_json_field(raw: str | None, field_name: str) -> dict | None:
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            logger.warning(f"{field_name} Form field was not valid JSON — ignoring it.")
+            return None
+
+    parsed_feature_recommendation = _parse_json_field(feature_recommendation, "feature_recommendation")
+    parsed_ml_breakdown = _parse_json_field(ml_readiness_breakdown, "ml_readiness_breakdown")
+    parsed_llm_breakdown = _parse_json_field(llm_readiness_breakdown, "llm_readiness_breakdown")
 
     content = await file.read()
 
@@ -58,6 +76,8 @@ async def analyze(
         ml_readiness_score=ml_readiness,
         llm_readiness_score=llm_readiness,
         feature_recommendation=parsed_feature_recommendation,
+        ml_readiness_breakdown=parsed_ml_breakdown,
+        llm_readiness_breakdown=parsed_llm_breakdown,
     )
 
     return AnalysisResponse(**result)

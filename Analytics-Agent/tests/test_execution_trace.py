@@ -18,10 +18,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pytest
 
-from app.agents.analytics_agent.graph import _build_execution_trace, run_analytics_graph
+from app.agents.analytics_agent.graph import (
+    _build_execution_trace, run_analytics_graph, _summarize_breakdown,
+    _model_version_for_engine, _load_model_registry,
+)
 from app.config import ML_READINESS_THRESHOLD, LLM_READINESS_THRESHOLD
 
 _DATASET = Path(r"C:\Users\dhawa\mva\Schema-Intelligence-Layer\test_data\insurance_variance_data_native.csv")
+_REGISTRY = _load_model_registry()  # the real ml/model_registry.json — tests below assert against
+                                     # its actual current values rather than hardcoding stale numbers
 
 
 # ── _build_execution_trace — pure-function unit tests ────────────────────────
@@ -41,7 +46,11 @@ def test_ml_gated_happy_path_reports_model_and_passed_gate():
 
     ml_step = next(s for s in trace if s["step"] == "forecast")
     assert ml_step["engine"] == "Prophet"
-    assert ml_step["gate"] == {"name": "ml_readiness", "score": 92.0, "threshold": ML_READINESS_THRESHOLD, "passed": True}
+    assert ml_step["gate"]["name"] == "ml_readiness"
+    assert ml_step["gate"]["score"] == 92.0
+    assert ml_step["gate"]["threshold"] == ML_READINESS_THRESHOLD
+    assert ml_step["gate"]["passed"] is True
+    assert ml_step["gate"]["breakdown"] is None  # no breakdown supplied in this state
 
     assert summary["ml_engine"] == "Prophet"
     assert summary["fallback_used"] is False
@@ -172,6 +181,172 @@ def test_execution_time_is_recorded():
     assert summary["execution_time_seconds"] == 1.5
 
 
+# ── _summarize_breakdown ──────────────────────────────────────────────────────
+
+def test_summarize_breakdown_names_strongest_and_weakest():
+    breakdown = {"evidence": [
+        {"dimension": "completeness", "value": 0.95},
+        {"dimension": "feature_coverage", "value": 1.0},
+        {"dimension": "data_freshness", "value": 0.55},
+    ]}
+    summary = _summarize_breakdown(breakdown)
+    assert "Strongest on feature_coverage (100%)" in summary
+    assert "weakest on data_freshness (55%)" in summary
+
+
+def test_summarize_breakdown_handles_single_dimension():
+    summary = _summarize_breakdown({"evidence": [{"dimension": "completeness", "value": 0.9}]})
+    assert summary == "Strongest/only factor: completeness (90%)."
+
+
+def test_summarize_breakdown_returns_none_for_missing_or_empty_evidence():
+    assert _summarize_breakdown(None) is None
+    assert _summarize_breakdown({}) is None
+    assert _summarize_breakdown({"evidence": []}) is None
+
+
+def test_ml_gate_reason_includes_breakdown_summary_when_supplied():
+    state = {
+        "intent": "forecast",
+        "evidence": {"kpi": "x"},
+        "response": "...",
+        "ml_readiness_score": 82.0,
+        "ml_readiness_breakdown": {"evidence": [
+            {"dimension": "feature_coverage", "value": 1.0},
+            {"dimension": "data_freshness", "value": 0.55},
+        ]},
+    }
+    trace, _ = _build_execution_trace(state, elapsed_seconds=0.2)
+    ml_step = next(s for s in trace if s["step"] == "forecast")
+    assert ml_step["gate"]["breakdown"] == state["ml_readiness_breakdown"]
+    assert "weakest on data_freshness" in ml_step["reason"]
+
+
+def test_narration_reason_includes_llm_breakdown_summary_when_supplied():
+    state = {
+        "intent": "show_kpi",
+        "evidence": {"kpi": "x"},
+        "response": "...",
+        "llm_engine_used": "Groq",
+        "llm_readiness_score": 95.0,
+        "llm_readiness_breakdown": {"evidence": [{"dimension": "description_coverage", "value": 0.9}]},
+    }
+    trace, _ = _build_execution_trace(state, elapsed_seconds=0.2)
+    narration = next(s for s in trace if s["step"] == "narration")
+    assert narration["gate"]["breakdown"] == state["llm_readiness_breakdown"]
+    assert "description_coverage" in narration["reason"]
+
+
+# ── _model_version_for_engine ─────────────────────────────────────────────────
+
+def test_model_version_prophet_is_refit_per_query_not_a_training_date():
+    version = _model_version_for_engine("Prophet", _REGISTRY)
+    assert version["refit_per_query"] is True
+    assert "trained_at" not in version
+    assert version["last_run_at"] == _REGISTRY["prophet_forecast"]["timestamp"]
+
+
+def test_model_version_isolation_forest_has_trained_at_and_no_accuracy():
+    version = _model_version_for_engine("IsolationForest", _REGISTRY)
+    assert version["trained_at"] == _REGISTRY["isolation_forest"]["timestamp"]
+    assert version["accuracy_metric"] is None  # unsupervised — no fabricated number
+
+
+def test_model_version_kmeans_has_trained_at_and_no_accuracy():
+    version = _model_version_for_engine("K-Means", _REGISTRY)
+    assert version["trained_at"] == _REGISTRY["kmeans_segmentation"]["timestamp"]
+    assert version["accuracy_metric"] is None
+
+
+def test_model_version_returns_none_for_unknown_engine_or_empty_registry():
+    assert _model_version_for_engine("SomeOtherModel", _REGISTRY) is None
+    assert _model_version_for_engine("Prophet", {}) is None
+
+
+def test_ml_gated_happy_path_attaches_model_version():
+    state = {
+        "intent": "anomaly",
+        "evidence": {"kpi": "x"},  # no ml_readiness_blocked -> model path ran
+        "response": "...",
+        "ml_readiness_score": 92.0,
+    }
+    trace, _ = _build_execution_trace(state, elapsed_seconds=0.2)
+    step = next(s for s in trace if s["step"] == "anomaly")
+    assert step["model_version"]["accuracy_metric"] is None
+    assert step["model_version"]["trained_at"] == _REGISTRY["isolation_forest"]["timestamp"]
+
+
+def test_ml_gated_fallback_path_has_no_model_version():
+    state = {
+        "intent": "anomaly",
+        "evidence": {"ml_readiness_blocked": True, "ml_readiness_score": 40.0,
+                      "fallback_reason": "below threshold", "fallback_applied": "Z-Score fallback"},
+        "response": "...",
+        "ml_readiness_score": 40.0,
+    }
+    trace, _ = _build_execution_trace(state, elapsed_seconds=0.2)
+    step = next(s for s in trace if s["step"] == "anomaly")
+    assert "model_version" not in step  # nothing ran, so nothing to version
+
+
+def test_root_cause_xgboost_corroboration_cites_real_registry_accuracy():
+    state = {
+        "intent": "root_cause",
+        "evidence": {"kpi": "x", "ml_predicted_driver": "claim_frequency_variance", "ml_confidence": 0.8},
+        "response": "...",
+    }
+    trace, _ = _build_execution_trace(state, elapsed_seconds=0.2)
+    step = next(s for s in trace if s["step"] == "root_cause")
+    xgb = _REGISTRY.get("xgboost_classifier", {})
+    if "accuracy" in xgb:
+        assert f"{xgb['accuracy']:.1%}" in step["reason"]
+
+
+def test_forecast_key_drivers_cites_real_lightgbm_r2():
+    state = {
+        "intent": "forecast",
+        "evidence": {"kpi": "x", "key_drivers": [{"feature": "claim_frequency", "importance": 0.4}]},
+        "response": "...",
+        "ml_readiness_score": 99.75,
+    }
+    trace, _ = _build_execution_trace(state, elapsed_seconds=0.2)
+    step = next(s for s in trace if s["step"] == "forecast")
+    lgbm = _REGISTRY.get("lightgbm_regressor", {})
+    if "r2" in lgbm:
+        assert "LightGBM" in step["reason"]
+        assert f"{lgbm['r2']:.3f}" in step["reason"]
+
+
+# ── Per-step duration_ms ──────────────────────────────────────────────────────
+
+def test_duration_ms_attached_when_node_durations_supplied():
+    state = {
+        "intent": "show_kpi",
+        "evidence": {"kpi": "x"},
+        "response": "...",
+        "llm_engine_used": "Groq",
+        "llm_readiness_score": 99.0,
+    }
+    node_durations_ms = {"detect_intent_and_filters": 4.7, "handle_show_kpi": 345.3, "narrate": 12.1}
+    trace, _ = _build_execution_trace(state, elapsed_seconds=0.5, node_durations_ms=node_durations_ms)
+
+    intent_step = next(s for s in trace if s["step"] == "intent_detection")
+    kpi_step = next(s for s in trace if s["step"] == "show_kpi")
+    narration_step = next(s for s in trace if s["step"] == "narration")
+    assert intent_step["duration_ms"] == 4.7
+    assert kpi_step["duration_ms"] == 345.3
+    assert narration_step["duration_ms"] == 12.1
+
+
+def test_duration_ms_omitted_when_node_durations_not_supplied():
+    """Backward compatibility: the 2-positional-arg call shape every other
+    test in this file uses must keep working unchanged."""
+    state = {"intent": "show_kpi", "evidence": {"kpi": "x"}, "response": "..."}
+    trace, _ = _build_execution_trace(state, elapsed_seconds=0.2)
+    for entry in trace:
+        assert "duration_ms" not in entry
+
+
 # ── Real end-to-end wiring check ──────────────────────────────────────────────
 
 pytestmark_dataset = pytest.mark.skipif(
@@ -197,7 +372,11 @@ def test_end_to_end_forecast_happy_path_reports_prophet():
     # / fallback_used unit tests above for that behavior, tested deterministically.
     assert result["execution_summary"]["ml_engine"] == "Prophet"
     assert result["execution_summary"]["execution_time_seconds"] > 0
-    assert any(step["step"] == "forecast" and step["engine"] == "Prophet" for step in result["execution_trace"])
+    forecast_step = next(s for s in result["execution_trace"] if s["step"] == "forecast" and s["engine"] == "Prophet")
+    assert forecast_step["duration_ms"] > 0
+    assert forecast_step["model_version"]["refit_per_query"] is True
+    # Every trace entry should have real per-step timing now, via graph.stream().
+    assert all(step.get("duration_ms", 0) >= 0 for step in result["execution_trace"])
 
 
 @pytestmark_dataset
@@ -214,6 +393,9 @@ def test_end_to_end_forecast_fallback_path_reports_historical_trend():
     assert result["status"] == "ok"
     assert result["execution_summary"]["fallback_used"] is True
     assert "Historical Trend" in result["execution_summary"]["ml_engine"]
+    forecast_step = next(s for s in result["execution_trace"] if s["step"] == "forecast")
+    assert "model_version" not in forecast_step  # fallback path — no model ran, nothing to version
+    assert forecast_step["duration_ms"] > 0
 
 
 # ── AnalysisResponse round-trip ───────────────────────────────────────────────
