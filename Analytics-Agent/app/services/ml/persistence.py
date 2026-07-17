@@ -13,9 +13,7 @@ import pickle
 from pathlib import Path
 from typing import Any
 
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import ML_MODEL_SAVE_DIR
+from app.config import ML_MODEL_SAVE_DIR
 
 logger = logging.getLogger(__name__)
 

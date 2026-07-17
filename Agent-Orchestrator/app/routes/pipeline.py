@@ -5,8 +5,13 @@ Each future agent added to the pipeline becomes another node in that same graph.
 """
 
 from fastapi import APIRouter, UploadFile, File, Form
+from fastapi.responses import JSONResponse
+import httpx
 
 from app.agents.orchestration_agent.graph import run_orchestrator_pipeline
+from app.agents.orchestration_agent.nodes.pipeline import (
+    _agent3_skip_reason, _analyze_via_agent3, _get_agent2_result, _readiness_and_features,
+)
 
 router = APIRouter(prefix="/pipeline", tags=["Pipeline"])
 
@@ -50,13 +55,17 @@ async def run_pipeline(
     supported domains (Finance, Payments, Customer, HR, Insurance), the pipeline
     stops with a clear error rather than guessing.
 
-    3. Agent 3 (Analytics Agent, a colleague's separate CLI-based project) —
+    3. Agent 3 (Analytics Agent, vendored at Analytics-Agent/, port 8003) —
        optional. Only runs when Agent 1 classified the upload as Insurance,
        the file is a CSV, and a business_question was supplied — it answers
-       exactly that one question using Agent 2's ML-readiness score. Outside
-       that scope it's skipped (`agent3.status == "skipped"`) without
+       exactly that one question using Agent 2's ML/LLM-readiness scores.
+       Outside that scope it's skipped (`agent3.status == "skipped"`) without
        affecting Agent 1/2's results; a broken Agent 3 invocation likewise
        never fails the pipeline (`agent3.status == "failed"` with a reason).
+
+    To ask Agent 3 a *different* question against the same dataset
+    afterwards, use `POST /pipeline/ask` instead of calling this again —
+    it skips Agent 1's quality gate and Agent 2's full profiling entirely.
     """
     content = await file.read()
     filename = file.filename or "upload"
@@ -71,3 +80,72 @@ async def run_pipeline(
         business_question=business_question,
         target_column=target_column,
     )
+
+
+@router.post("/ask")
+async def ask_agent3(
+    file: UploadFile = File(
+        ..., description="The same dataset re-uploaded — Agent 3 needs real rows to query, and there's "
+                          "nowhere durable this service can fetch them back from on its own."
+    ),
+    business_question: str = Form(..., description="The new business question to answer."),
+    run_id: str = Form(
+        ..., description="Agent 2's run_id from an earlier POST /pipeline/run response "
+                          "(the agent2.run_id field)."
+    ),
+):
+    """
+    Re-ask Agent 3 a different business_question against a dataset that
+    already went through a full `POST /pipeline/run` — without repeating
+    Agent 1's quality gate/classification or Agent 2's full profiling
+    pipeline. Only reads Agent 2's already-persisted result for `run_id`
+    (one lightweight GET) and calls Agent 3 — Agent 1 and Agent 2's actual
+    pipelines never run again.
+
+    Response mirrors `/pipeline/run`'s shape, minus the agents that didn't
+    run: `{"agent3": {...}, "primary_domain_used": "..."}`. `agent3.status`
+    is `"skipped"` (not an error) outside Agent 3's scope — non-Insurance
+    domain, non-CSV upload — same as in `/pipeline/run`.
+
+    Errors distinct from `agent3.status` (these are caller mistakes, not
+    "outside Agent 3's scope"): `404` if `run_id` isn't known to Agent 2,
+    `502` if Agent 2 is unreachable.
+    """
+    content = await file.read()
+    filename = file.filename or "upload"
+    content_type = file.content_type or "application/octet-stream"
+
+    try:
+        status_code, body = await _get_agent2_result(run_id)
+    except httpx.HTTPError as e:
+        return JSONResponse(
+            status_code=502,
+            content={"detail": f"Could not reach Agent 2 (Data Profiling Engine) to fetch run {run_id}: {e}"},
+        )
+
+    if status_code == 404:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": f"No Agent 2 run found for run_id={run_id!r} — run POST /pipeline/run first."},
+        )
+    if status_code != 200:
+        return JSONResponse(
+            status_code=502,
+            content={"detail": f"Agent 2 returned {status_code} fetching run {run_id}: {body}"},
+        )
+
+    agent2_full_result = body
+    primary_domain = agent2_full_result.get("primary_domain")
+
+    skip_reason = _agent3_skip_reason(filename, primary_domain, business_question)
+    if skip_reason:
+        return {
+            "agent3": {"status": "skipped", "reason": skip_reason},
+            "primary_domain_used": primary_domain,
+        }
+
+    ml_score, llm_score, feature_columns = _readiness_and_features(agent2_full_result)
+    agent3_body = await _analyze_via_agent3(
+        business_question, filename, content, content_type, ml_score, llm_score, feature_columns,
+    )
+    return {"agent3": agent3_body, "primary_domain_used": primary_domain}

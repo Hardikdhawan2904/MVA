@@ -13,11 +13,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import pandas as pd
 import pytest
 
-from ml.persistence import load_pickle
-from ml.anomaly_detector import AnomalyDetector, RATIO_FEATURE_COLUMNS
-from ml.classifier import RiskSegmenter, VarianceClassifier, SEGMENT_FEATURE_COLS, VARIANCE_FEATURE_COLS
-from ml.forecaster import LightGBMForecaster
-from tools.rule_engine import _safe_eval
+from app.services.ml.persistence import load_pickle
+from app.services.ml.anomaly_detector import AnomalyDetector, RATIO_FEATURE_COLUMNS
+from app.services.ml.classifier import RiskSegmenter, VarianceClassifier, SEGMENT_FEATURE_COLS, VARIANCE_FEATURE_COLS
+from app.services.ml.forecaster import LightGBMForecaster
+from app.services.rule_engine import _safe_eval
 
 _DATASET = Path(r"C:\Users\dhawa\mva\Schema-Intelligence-Layer\test_data\insurance_variance_data_native.csv")
 
@@ -131,7 +131,7 @@ def test_lightgbm_key_drivers_for_untrained_target_is_none():
     assert LightGBMForecaster().get_key_drivers("some_kpi_never_trained_actual") is None
 
 
-# ── tools/rule_engine.py::_safe_eval ─────────────────────────────────────────
+# ── app/services/rule_engine.py::_safe_eval ──────────────────────────────────
 # These 4 conditions use uppercase AND, which is not valid Python — before
 # this session's fix, eval() raised SyntaxError on every one of them,
 # silently swallowed by evaluate_rules()'s blanket except — so these rules

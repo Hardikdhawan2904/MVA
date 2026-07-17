@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from tools.rule_engine import RuleEngine
+from app.services.rule_engine import RuleEngine
 
 
 def test_rule_engine_loads():

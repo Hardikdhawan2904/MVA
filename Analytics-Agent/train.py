@@ -31,12 +31,12 @@ import pandas as pd
 
 # Project imports
 sys.path.insert(0, str(Path(__file__).parent))
-from config import (
+from app.config import (
     DATASET_PATH, ML_MODEL_SAVE_DIR, LOG_LEVEL, LOG_FORMAT,
     LGBM_CFG, ISO_FOREST_CFG, XGBOOST_CFG, KMEANS_CFG,
     MODEL_REGISTRY_PATH,
 )
-from tools.sql_tool import SQLTool
+from app.services.sql_tool import SQLTool
 
 logging.basicConfig(level=getattr(logging, LOG_LEVEL), format=LOG_FORMAT)
 logger = logging.getLogger("ModelTrainer")

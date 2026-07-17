@@ -1,4 +1,4 @@
-# Starts the shared Postgres container plus all three services, each in its own
+# Starts the shared Postgres container plus all four services, each in its own
 # terminal window (so logs stay separate and readable). Run once from the repo root:
 #   powershell -File start-all.ps1
 
@@ -25,9 +25,14 @@ Write-Host "Starting Orchestrator on :8002..." -ForegroundColor Cyan
 Start-Process powershell -ArgumentList "-NoExit", "-Command", `
     "cd '$root\Agent-Orchestrator'; & '$py' -m uvicorn app.main:app --port 8002 --reload"
 
+Write-Host "Starting Agent 3 (Analytics Agent) on :8003..." -ForegroundColor Cyan
+Start-Process powershell -ArgumentList "-NoExit", "-Command", `
+    "cd '$root\Analytics-Agent'; & '$py' -m uvicorn app.main:app --port 8003 --reload"
+
 Write-Host ""
 Write-Host "All services launching. Give them a few seconds, then check:" -ForegroundColor Green
 Write-Host "  Agent 1:      http://127.0.0.1:8000/health"
 Write-Host "  Agent 2:      http://127.0.0.1:8001/api/v1/health"
 Write-Host "  Orchestrator: http://127.0.0.1:8002/health"
+Write-Host "  Agent 3:      http://127.0.0.1:8003/health"
 Write-Host "  Full pipeline: http://127.0.0.1:8002/docs"

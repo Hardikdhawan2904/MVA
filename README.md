@@ -35,14 +35,11 @@ Internally it's organized as four cooperating services plus a shared database �
                    ┌─────────────────────┐
                    │  Agent 3 (optional)  │
                    │  Analytics Agent     │
-                   │  — CLI subprocess,   │
-                   │  shared venv         │
+                   │  FastAPI + LangGraph │
                    └─────────────────────┘
 ```
 
-Each service runs as its own FastAPI process (so they can be started, stopped, and observed independently), but they share one virtual environment, one dependency list, and one repo history. The orchestrator is the only thing that chains them together.
-
-Agent 3 is the one exception to "FastAPI process": it's a CLI tool (originally from a colleague's project, now vendored into this repo at `Analytics-Agent/`), not a web service, so the orchestrator shells out to it as a subprocess rather than calling it over HTTP — but it installs from the same root `requirements.txt` and runs under the same shared venv as everything else. See "Agent 3 — Analytics Agent" below.
+Each service runs as its own FastAPI process (so they can be started, stopped, and observed independently), but they share one virtual environment, one dependency list, and one repo history. The orchestrator is the only thing that chains them together — Agent 3 included, called over HTTP exactly like Agent 1/2. See "Agent 3 — Analytics Agent" below.
 
 ## What's inside
 
@@ -52,7 +49,7 @@ Agent 3 is the one exception to "FastAPI process": it's a CLI tool (originally f
 | [`MVA-use-case-latest-one`](./MVA-use-case-latest-one) | Deep structural profiling, quality/readiness scoring, hierarchy inference, chart generation, AI rule suggestions | 8001 |
 | [`Agent-Orchestrator`](./Agent-Orchestrator) | Chains Agent 1 → Agent 2 → (optionally) Agent 3 into one call | 8002 |
 | [`Shared-Postgres`](./Shared-Postgres) | The one Postgres server everything persists to, schema-isolated per service | 5433 |
-| [`Analytics-Agent`](./Analytics-Agent) | Agent 3 — Insurance-domain Q&A (KPI/variance/root-cause/forecast/anomaly/segment), invoked as a CLI subprocess, not a web service | — |
+| [`Analytics-Agent`](./Analytics-Agent) | Agent 3 — Insurance-domain Q&A (KPI/variance/root-cause/forecast/anomaly/segment) | 8003 |
 
 Each has its own README going deeper on that piece specifically — this file is the map, not a duplicate.
 
@@ -71,11 +68,12 @@ Each has its own README going deeper on that piece specifically — this file is
 powershell -File start-all.ps1
 ```
 
-This starts the shared Postgres container plus all three services (using the one shared venv), each in its own terminal window. Then:
+This starts the shared Postgres container plus all four services (using the one shared venv), each in its own terminal window. Then:
 
 - Full pipeline (recommended entry point): `http://127.0.0.1:8002/docs`
 - Agent 1 alone: `http://127.0.0.1:8000/docs`
 - Agent 2 alone: `http://127.0.0.1:8001/docs`
+- Agent 3 alone: `http://127.0.0.1:8003/docs`
 
 ## The pipeline, end to end
 
@@ -86,17 +84,20 @@ This starts the shared Postgres container plus all three services (using the one
 5. The LLM also proposes up to 5 candidate business rules from what it saw in that run's columns. These sit as `proposed` until a human approves or rejects them via Agent 2's API — approved rules then automatically apply to every future upload in that domain, closing the loop.
 6. If the caller passed a `business_question` **and** Agent 1 classified the file as `Insurance` **and** it's a CSV, **Agent 3** answers that one question using Agent 2's ML-readiness score — see below. Otherwise this step is skipped.
 7. All agents' results come back together in one response (`agent1`, `agent2`, `agent3`).
+8. **Follow-up questions** don't need to repeat steps 1-5 — `POST /pipeline/ask` (with the earlier response's `agent2.run_id`) re-asks Agent 3 alone, skipping Agent 1's quality gate and Agent 2's full profiling entirely.
 
 ## Agent 3 — Analytics Agent (optional, Insurance only)
 
-Unlike Agent 1/2, Agent 3 (`Analytics-Agent/`) is a **CLI tool**, not an HTTP service — it answers one business question at a time (KPI lookup, variance, root-cause, forecast, anomaly detection, portfolio segmentation) against an Insurance dataset via DuckDB + ML/LLM tools. It shares this repo's dependencies and venv like the other three folders; the orchestrator just invokes it as a subprocess instead of calling it over HTTP, since it has no server to call:
+Agent 3 (`Analytics-Agent/`, port 8003) is a FastAPI service like Agent 1/2 — a thin `app/main.py`/`app/routes/` shell over a LangGraph `StateGraph` (`app/agents/analytics_agent/`). It answers one business question at a time (KPI lookup, variance, root-cause, forecast, anomaly detection, portfolio segmentation) against an uploaded Insurance dataset via DuckDB + ML/LLM tools (`app/services/`), and the orchestrator calls its `POST /analyze` over httpx exactly like it calls Agent 1/2:
 
 - **Runs only when**: `primary_domain == "Insurance"`, the upload is a `.csv`, and `business_question` was supplied. Otherwise `agent3` in the response is `{"status": "skipped", "reason": "..."}`.
-- **Inputs it's given**: the same uploaded rows (written to a temp CSV per request), and Agent 2's `ml_readiness` score (from `agent2.readiness_assessments`) passed as `--ml-readiness`.
-- **Best-effort**: if it errors out or times out, `agent3.status == "failed"` with a reason — this never fails Agent 1/2's already-successful result.
+- **Inputs it's given**: the same uploaded file (posted straight through, no temp file on the orchestrator's side anymore), and Agent 2's `ml_readiness`/`llm_readiness` scores (from `agent2.readiness_assessments`) as Form fields.
+- **Best-effort**: if it's unreachable or returns a non-200, `agent3.status == "failed"` with a reason — this never fails Agent 1/2's already-successful result.
 - **Setup**: covered by the normal Quick Start above (`pip install -r requirements.txt` includes its deps — `duckdb`, `prophet`, `lightgbm`, `xgboost`, `scikit-learn`, `shap` — and it needs its own `Analytics-Agent/.env` with `GROQ_API_KEY`, same as Agent 1/2). Nothing separate to clone or install.
-- Configured via `Agent-Orchestrator/.env`: `ANALYTICS_AGENT_PATH` (defaults to `Analytics-Agent/` inside this repo) and optionally `ANALYTICS_AGENT_PYTHON` to point at a different interpreter — left blank, it uses the orchestrator's own (shared venv) interpreter.
+- Configured via `Agent-Orchestrator/.env`: `ANALYTICS_AGENT_BASE_URL` (defaults to `http://127.0.0.1:8003`).
+- A standalone local-testing CLI (no HTTP server needed) is still available at `Analytics-Agent/scripts/cli.py --query "..."`.
 - Originally built as a separate project by a colleague (github.com/VirenKhapra/Analytics-agent-for-project-3) and vendored in here; its own repo still exists independently if contributing changes back upstream.
+- **Asking a follow-up question?** Use `POST /pipeline/ask` instead of `/pipeline/run` — re-uploads the file (Agent 3 needs real rows to query; nothing durably stores them elsewhere) but skips Agent 1 and Agent 2's actual pipelines, reusing Agent 2's already-persisted readiness scores by `run_id`. See [`Agent-Orchestrator/README.md`](./Agent-Orchestrator/README.md#re-asking-agent-3-without-re-running-the-whole-pipeline).
 
 ## Known constraints worth knowing
 

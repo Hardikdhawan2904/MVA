@@ -1,6 +1,7 @@
 """
-ml/feature_validation.py — validate the hardcoded per-model feature column
-lists in ml_config.yml against Agent 2's per-upload column classification.
+app/services/ml/feature_validation.py — validate the hardcoded per-model
+feature column lists in ml_config.yml against Agent 2's per-upload column
+classification.
 
 Agent 3's ML feature lists (which ratio columns feed IsolationForest/KMeans,
 which variance columns feed XGBoost, which columns LightGBM treats as
@@ -10,22 +11,18 @@ classification that doesn't map onto Agent 3's fixed internal targets and is
 far coarser than what these models actually want (see decision recorded in
 the session that added this file).
 
-What this module adds is a boot-time cross-check: does *this specific
+What this module adds is a per-request cross-check: does *this specific
 upload* actually have the columns those hardcoded lists expect, and does
 Agent 2 agree they're numeric/dimension columns rather than something else?
 A mismatch here would previously only surface as a silent per-query
 fallback or a runtime crash deep in a query handler — this makes it visible
-at startup instead. Diagnostic only: never raises, never blocks startup,
-never changes what any model does.
+at request time instead. Diagnostic only: never raises, never blocks the
+request, never changes what any model does.
 """
 
-import json
 import logging
-from pathlib import Path
 
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import ISO_FOREST_CFG, KMEANS_CFG, XGBOOST_CFG, LGBM_CFG
+from app.config import ISO_FOREST_CFG, KMEANS_CFG, XGBOOST_CFG, LGBM_CFG
 
 logger = logging.getLogger(__name__)
 
@@ -38,25 +35,20 @@ _CHECKS = [
 ]
 
 
-def validate_feature_columns(feature_recommendation_path: str | None) -> None:
+def validate_feature_columns(feature_recommendation: list[dict] | None) -> None:
     """Log a warning for every hardcoded feature column that either doesn't
     exist in this upload's schema (per Agent 2's classification) or isn't
     tagged with the expected role. No-ops silently if no recommendation was
-    supplied or it can't be read — this is best-effort diagnostics, not a
-    requirement for Agent 3 to run."""
-    if not feature_recommendation_path:
+    supplied — this is best-effort diagnostics, not a requirement for
+    Agent 3 to run. `feature_recommendation` is already-parsed JSON (the
+    route parses the `feature_recommendation` Form field before building
+    graph state), not a file path — there is no per-upload file to read
+    anymore now that Agent 3 receives the upload directly over HTTP."""
+    if not feature_recommendation:
         logger.info("No feature recommendation supplied — skipping column validation.")
         return
 
-    try:
-        with open(feature_recommendation_path, "r", encoding="utf-8") as f:
-            feature_columns = json.load(f)
-    except (OSError, json.JSONDecodeError) as e:
-        logger.warning(f"Could not read feature recommendation at "
-                        f"{feature_recommendation_path}: {e} — skipping column validation.")
-        return
-
-    roles = {c.get("column"): c.get("role") for c in feature_columns if c.get("column")}
+    roles = {c.get("column"): c.get("role") for c in feature_recommendation if c.get("column")}
     if not roles:
         logger.info("Feature recommendation was empty — skipping column validation.")
         return

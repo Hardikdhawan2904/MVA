@@ -15,9 +15,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import GROQ_API_KEY, GROQ_MODEL
+from app.config import GROQ_API_KEY, GROQ_MODEL
 
 logger = logging.getLogger(__name__)
 

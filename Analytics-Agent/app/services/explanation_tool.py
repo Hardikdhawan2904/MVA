@@ -12,12 +12,11 @@ STRICT CONSTRAINTS:
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import (
+from app.config import (
     GROQ_API_KEY, GROQ_MODEL, GROQ_TEMPERATURE, GROQ_MAX_TOKENS,
     AGENT_ROLE, SYSTEM_PROMPT_CFG, LLM_READINESS_THRESHOLD,
 )
@@ -58,6 +57,11 @@ You speak facts. Nothing else."""
 
 # Built once at import time from agent_config.yml — see _build_system_prompt().
 _SYSTEM_PROMPT = _build_system_prompt()
+
+# Matches from a "## Confidence" heading to the end of the narrative (it's
+# always the last section per the requested format) — used to force-replace
+# whatever the LLM wrote there with the deterministically computed value.
+_CONFIDENCE_SECTION_RE = re.compile(r"##\s*confidence.*", re.IGNORECASE | re.DOTALL)
 
 
 class ExplanationTool:
@@ -100,20 +104,28 @@ class ExplanationTool:
 
         Returns: Business narrative string.
         """
+        # Confidence is a deterministic function of which evidence keys are
+        # present (see _compute_confidence) — never left to the LLM's
+        # judgment, so it's computed once here and handed to whichever path
+        # runs, rather than each path (re-)deriving its own answer.
+        confidence_level, confidence_text = self._compute_confidence(evidence)
+
         if self._client and self.llm_readiness_score >= LLM_READINESS_THRESHOLD:
-            return self._call_groq(evidence, query_context)
+            return self._call_groq(evidence, query_context, confidence_level, confidence_text)
 
         if self._client:
             logger.info(
                 f"LLM readiness score ({self.llm_readiness_score:.2f}) below threshold "
                 f"({LLM_READINESS_THRESHOLD}) — using template formatter instead of Groq."
             )
-        return self._template_format(evidence, query_context)
+        return self._template_format(evidence, query_context, confidence_text)
 
     # ── Groq LLM Path ─────────────────────────────────────────────────────────
 
-    def _call_groq(self, evidence: dict, query_context: str) -> str:
-        evidence_str = json.dumps(evidence, indent=2, default=str)
+    def _call_groq(
+        self, evidence: dict, query_context: str, confidence_level: str, confidence_text: str,
+    ) -> str:
+        evidence_str = json.dumps({**evidence, "confidence_level": confidence_level}, indent=2, default=str)
         context_block = f"{self._conversation_context}\n\n" if self._conversation_context else ""
         user_message = f"""{context_block}User Question: {query_context}
 
@@ -125,6 +137,13 @@ Generate a structured business narrative following the format:
 ## Supporting Evidence
 ## Root Cause (if applicable)
 ## Confidence
+
+The evidence's "confidence_level" field ({confidence_level}) is pre-computed
+and authoritative — do not assess your own confidence level or reason about
+whether it should be different. State it as given. (Your Confidence section
+will be replaced verbatim with the pre-computed text regardless of what you
+write, so spend your effort on the Summary/Evidence/Root Cause sections
+instead.)
 
 If prior conversation context is present above, use it only to resolve
 what the current question refers to (e.g. an implied KPI or period) — never
@@ -141,15 +160,26 @@ narrate facts from a prior turn as if they were computed for this one."""
                 max_tokens=GROQ_MAX_TOKENS,
             )
             narrative = response.choices[0].message.content
+            narrative = self._enforce_confidence_section(narrative, confidence_text)
             logger.info(f"Groq narration complete: {len(narrative)} chars")
             return narrative
         except Exception as e:
             logger.error(f"Groq API error: {e} — falling back to template formatter")
-            return self._template_format(evidence, query_context)
+            return self._template_format(evidence, query_context, confidence_text)
+
+    @staticmethod
+    def _enforce_confidence_section(narrative: str, confidence_text: str) -> str:
+        """Guarantees the Confidence section matches the deterministic
+        computation regardless of whether Groq followed the prompt
+        instruction — replaces a "## Confidence" heading's content verbatim,
+        or appends the section if Groq omitted it entirely."""
+        replacement = f"## Confidence\n{confidence_text}"
+        new_narrative, count = _CONFIDENCE_SECTION_RE.subn(replacement, narrative)
+        return new_narrative if count else f"{narrative.rstrip()}\n\n{replacement}"
 
     # ── Fallback Template Formatter ───────────────────────────────────────────
 
-    def _template_format(self, evidence: dict, query_context: str) -> str:
+    def _template_format(self, evidence: dict, query_context: str, confidence_text: str) -> str:
         """
         Rule-based formatter — no LLM, no hallucination.
         Produces a structured response from the evidence dict.
@@ -248,22 +278,25 @@ narrate facts from a prior turn as if they were computed for this one."""
                 lines.append(f"• {flag_col.replace('_', ' ').title()}: **{label}**")
 
         lines.append("\n## Confidence")
-        confidence = self._assess_confidence(evidence)
-        lines.append(confidence)
+        lines.append(confidence_text)
 
         return "\n".join(lines)
 
-    def _assess_confidence(self, evidence: dict) -> str:
-        """Rule-based confidence assessment."""
+    @staticmethod
+    def _compute_confidence(evidence: dict) -> tuple[str, str]:
+        """Rule-based confidence assessment — the sole source of truth for
+        the Confidence section in both narration paths. Never left to the
+        LLM's judgment: it's a deterministic function of which evidence
+        keys are present, not something that needs "narrating"."""
         has_actuals    = any("actual" in k for k in evidence)
         has_variance   = "variance_amount" in evidence or "driver_breakdown" in evidence
         has_root_cause = "primary_driver" in evidence
 
         if has_actuals and has_variance and has_root_cause:
-            return "**HIGH** — Actuals, variance, and root cause evidence all present."
+            return "HIGH", "**HIGH** — Actuals, variance, and root cause evidence all present."
         elif has_actuals and has_variance:
-            return "**MEDIUM** — Actuals and variance present; root cause not analysed."
+            return "MEDIUM", "**MEDIUM** — Actuals and variance present; root cause not analysed."
         elif has_actuals:
-            return "**MEDIUM** — Actuals present; comparison data absent."
+            return "MEDIUM", "**MEDIUM** — Actuals present; comparison data absent."
         else:
-            return "**LOW** — Limited evidence available."
+            return "LOW", "**LOW** — Limited evidence available."

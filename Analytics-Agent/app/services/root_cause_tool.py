@@ -17,9 +17,6 @@ from typing import Any
 import pandas as pd
 import numpy as np
 
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 logger = logging.getLogger(__name__)
 
 # The 14 pre-computed variance driver columns in the dataset

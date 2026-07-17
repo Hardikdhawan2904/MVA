@@ -1,5 +1,5 @@
 """
-tools/sql_tool.py — Tool 2: DuckDB In-Process Query Engine
+app/services/sql_tool.py — DuckDB In-Process Query Engine
 
 Executes SQL against the insurance CSV dataset via DuckDB.
 The Analytics Agent uses this ONLY to retrieve required records.
@@ -13,27 +13,9 @@ from typing import Any
 import duckdb
 import pandas as pd
 
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import DATASET_PATH
+from app.config import DATASET_PATH
 
 logger = logging.getLogger(__name__)
-
-# Register the CSV once at module load as a DuckDB view
-_CONN: duckdb.DuckDBPyConnection | None = None
-
-
-def _get_connection() -> duckdb.DuckDBPyConnection:
-    global _CONN
-    if _CONN is None:
-        _CONN = duckdb.connect(database=":memory:")
-        csv_path = str(DATASET_PATH)
-        _CONN.execute(f"""
-            CREATE VIEW insurance AS
-            SELECT * FROM read_csv_auto('{csv_path}', ALL_VARCHAR=FALSE, HEADER=TRUE)
-        """)
-        logger.info(f"DuckDB view 'insurance' registered from: {csv_path}")
-    return _CONN
 
 
 class SQLTool:
@@ -44,10 +26,23 @@ class SQLTool:
     - Always returns a pandas DataFrame.
     - Never does calculations — only filtering, grouping, aggregation for retrieval.
     - Logs every query for auditability.
+
+    One connection per instance, bound to `dataset_path` at construction —
+    deliberately NOT a process-wide cached singleton. As a subprocess
+    invoked fresh per upload this used to be safe to cache at module scope;
+    as a long-lived FastAPI service handling many different uploads over
+    its lifetime, a shared connection would silently keep answering every
+    request from whichever dataset happened to be loaded first.
     """
 
-    def __init__(self):
-        self.conn = _get_connection()
+    def __init__(self, dataset_path: str | Path | None = None):
+        csv_path = str(dataset_path or DATASET_PATH)
+        self.conn = duckdb.connect(database=":memory:")
+        self.conn.execute(f"""
+            CREATE VIEW insurance AS
+            SELECT * FROM read_csv_auto('{csv_path}', ALL_VARCHAR=FALSE, HEADER=TRUE)
+        """)
+        logger.info(f"DuckDB view 'insurance' registered from: {csv_path}")
 
     # ── Core Executor ─────────────────────────────────────────────────────────
 

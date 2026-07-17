@@ -17,14 +17,10 @@ from typing import Any
 
 import pandas as pd
 
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import ML_READINESS_THRESHOLD
-
-sys.path.insert(0, str(Path(__file__).parent.parent / "ml"))
-from ml.forecaster       import ProphetForecaster, LightGBMForecaster
-from ml.anomaly_detector import AnomalyDetector
-from ml.classifier       import VarianceClassifier, RiskSegmenter
+from app.config import ML_READINESS_THRESHOLD
+from app.services.ml.forecaster       import ProphetForecaster, LightGBMForecaster
+from app.services.ml.anomaly_detector import AnomalyDetector
+from app.services.ml.classifier       import VarianceClassifier, RiskSegmenter
 
 logger = logging.getLogger(__name__)
 

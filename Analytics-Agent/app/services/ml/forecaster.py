@@ -20,10 +20,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import ML_DIR, MODEL_REGISTRY_PATH, FORECAST_PERIODS
-from ml.persistence import load_pickle
+from app.config import ML_DIR, MODEL_REGISTRY_PATH, FORECAST_PERIODS
+from app.services.ml.persistence import load_pickle
 
 logger = logging.getLogger(__name__)
 

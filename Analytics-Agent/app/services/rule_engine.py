@@ -1,5 +1,5 @@
 """
-tools/rule_engine.py — Tool 1: Business Knowledge Loader
+app/services/rule_engine.py — Business Knowledge Loader
 
 Loads from config/ folder:
   - config/rules/kpi_definitions.json  → KPI formulas & column mappings
@@ -19,9 +19,7 @@ import yaml
 from pathlib import Path
 from typing import Any
 
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import (
+from app.config import (
     KPI_DEFINITIONS_PATH, DRILL_DOWN_HIERARCHY_PATH,
     PREDEFINED_RULES, KPI_THRESHOLDS, VARIANCE_DRIVERS,
     FLAG_DECODING, NEW_RULES, SUPPORTED_OPS,
@@ -115,7 +113,7 @@ class RuleEngine:
 
     def _validate_configs(self):
         """Validates all loaded configuration data via Pydantic schemas."""
-        from tools.schemas import KPIDefinitionsRoot, BusinessRulesRoot
+        from app.services.schemas import KPIDefinitionsRoot, BusinessRulesRoot
         try:
             # Reconstruct the raw KPI dict wrapper to validate
             raw_kpi_data = {"kpis": self._kpis}
@@ -357,7 +355,7 @@ class RuleEngine:
             return False
 
         # Validate candidate KPI definition using Pydantic
-        from tools.schemas import KPIDefinition
+        from app.services.schemas import KPIDefinition
         try:
             KPIDefinition.model_validate(definition)
         except Exception as e:

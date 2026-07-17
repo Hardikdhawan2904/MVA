@@ -10,13 +10,7 @@ early `return`s inside one function body.
 
 from __future__ import annotations
 
-import asyncio
 import json
-import os
-import sys
-import tempfile
-import time
-from pathlib import Path
 from typing import Any, Literal
 
 import httpx
@@ -42,13 +36,6 @@ def _strip_raw_rows(agent1_body: dict) -> dict:
     return agent1_body
 
 
-def _analytics_agent_python() -> str:
-    """ANALYTICS_AGENT_PYTHON overrides; otherwise use this process's own
-    interpreter — the Analytics Agent is vendored into mva and shares this
-    project's venv, so sys.executable is already the right one."""
-    return settings.ANALYTICS_AGENT_PYTHON or sys.executable
-
-
 def _agent3_skip_reason(
     filename: str, primary_domain: str | None, business_question: str | None,
 ) -> str | None:
@@ -60,6 +47,77 @@ def _agent3_skip_reason(
     if not filename.lower().endswith(".csv"):
         return "Analytics Agent only reads CSV datasets (DuckDB read_csv_auto) — this upload is not a .csv file."
     return None
+
+
+async def _get_agent2_result(run_id: str) -> tuple[int, dict[str, Any]]:
+    """GET Agent 2's already-persisted full result for run_id — no new
+    profiling work, just a read. Returns (status_code, body); raises only
+    on a network-level failure (connection refused, timeout, ...) — what a
+    non-200 status *means* differs by caller (fetch_agent2_result's node
+    falls back to the abbreviated agent2_body on anything but 200, since
+    run_id is known-valid there; /pipeline/ask treats a 404 as a genuine
+    caller error, since the run_id came from outside this request)."""
+    result_url = f"{settings.AGENT2_BASE_URL}{settings.AGENT2_API_PREFIX}/profile-runs/{run_id}/result"
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(result_url, timeout=settings.REQUEST_TIMEOUT_SECONDS)
+    return resp.status_code, _safe_json(resp)
+
+
+async def _analyze_via_agent3(
+    business_question: str,
+    filename: str,
+    content: bytes,
+    content_type: str,
+    ml_score: float | None,
+    llm_score: float | None,
+    feature_columns: list,
+) -> dict[str, Any]:
+    """The actual call to Agent 3's POST /analyze. Shared by the full
+    pipeline's call_agent3 node and the /pipeline/ask route — same request
+    shape either way, they just differ in where ml_score/llm_score/
+    feature_columns come from (a run just completed vs. re-fetched from
+    Agent 2's persisted result by run_id)."""
+    url = f"{settings.ANALYTICS_AGENT_BASE_URL}/analyze"
+    data = {"business_question": business_question}
+    if ml_score is not None:
+        data["ml_readiness"] = ml_score
+    if llm_score is not None:
+        data["llm_readiness"] = llm_score
+    if feature_columns:
+        data["feature_recommendation"] = json.dumps(feature_columns)
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                url,
+                files={"file": (filename, content, content_type)},
+                data=data,
+                timeout=settings.ANALYTICS_AGENT_TIMEOUT_SECONDS,
+            )
+    except httpx.HTTPError as e:
+        return {"status": "failed", "reason": f"Could not reach Analytics Agent at {url}: {e}"}
+
+    agent3_body = _safe_json(resp)
+
+    if resp.status_code != 200:
+        return {"status": "failed", "reason": f"Analytics Agent returned {resp.status_code}: {agent3_body}"}
+
+    return agent3_body
+
+
+def _readiness_and_features(agent2_full_result: dict) -> tuple[float | None, float | None, list]:
+    """Extract (ml_score, llm_score, feature_columns) from Agent 2's full
+    result — shared by call_agent3 and /pipeline/ask, same extraction
+    either way."""
+    readiness_assessments = (agent2_full_result or {}).get("readiness_assessments", [])
+    ml_score = next(
+        (r.get("score") for r in readiness_assessments if r.get("assessment_type") == "ml_readiness"), None,
+    )
+    llm_score = next(
+        (r.get("score") for r in readiness_assessments if r.get("assessment_type") == "llm_readiness"), None,
+    )
+    feature_columns = (agent2_full_result or {}).get("feature_recommendation", {}).get("feature_columns") or []
+    return ml_score, llm_score, feature_columns
 
 
 class OrchestratorGraphNodes:
@@ -213,11 +271,9 @@ class OrchestratorGraphNodes:
 
     async def fetch_agent2_result(self, state: PipelineState) -> dict[str, Any]:
         run_id = state["run_id"]
-        result_url = f"{settings.AGENT2_BASE_URL}{settings.AGENT2_API_PREFIX}/profile-runs/{run_id}/result"
         try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(result_url, timeout=settings.REQUEST_TIMEOUT_SECONDS)
-            agent2_full_result = _safe_json(resp) if resp.status_code == 200 else state["agent2_body"]
+            status_code, body = await _get_agent2_result(run_id)
+            agent2_full_result = body if status_code == 200 else state["agent2_body"]
         except httpx.HTTPError as e:
             return {
                 "error_status_code": 502,
@@ -233,13 +289,13 @@ class OrchestratorGraphNodes:
     def route_after_fetch(self, state: PipelineState) -> Literal["stop", "continue"]:
         return "stop" if state.get("error_content") is not None else "continue"
 
-    # ── Node 5: Agent 3 (Analytics Agent — CLI subprocess) ──────────────────
+    # ── Node 5: Agent 3 (Analytics Agent) ────────────────────────────────────
     # Vendored at mva/Analytics-Agent (originally github.com/VirenKhapra/
-    # Analytics-agent-for-project-3), sharing this project's venv — but still
-    # a standalone CLI tool, not an HTTP service like Agent 1/2, so it's run
-    # as a subprocess. Answers one business question at a time over the
-    # Insurance dataset via DuckDB + ML/LLM tools. Optional and best-effort:
-    # skips cleanly outside its scope (non-Insurance domain, no business_question, non-CSV upload) and never
+    # Analytics-agent-for-project-3), now a FastAPI service (port 8003) like
+    # Agent 1/2, called the same way as call_agent2 above. Answers one
+    # business question at a time over the Insurance dataset via DuckDB +
+    # ML/LLM tools. Optional and best-effort: skips cleanly outside its scope
+    # (non-Insurance domain, no business_question, non-CSV upload) and never
     # populates error_content/error_status_code on its own failures — Agent 1
     # and Agent 2 already succeeded by the time this node runs, so a broken
     # or unreachable Agent 3 shouldn't fail an otherwise-successful pipeline.
@@ -252,115 +308,12 @@ class OrchestratorGraphNodes:
         if skip_reason:
             return {"agent3_body": {"status": "skipped", "reason": skip_reason}}
 
-        readiness_assessments = (state.get("agent2_full_result") or {}).get("readiness_assessments", [])
-        ml_score = next(
-            (r.get("score") for r in readiness_assessments if r.get("assessment_type") == "ml_readiness"),
-            None,
+        ml_score, llm_score, feature_columns = _readiness_and_features(state.get("agent2_full_result"))
+        agent3_body = await _analyze_via_agent3(
+            business_question, state["filename"], state["content"], state["content_type"],
+            ml_score, llm_score, feature_columns,
         )
-        llm_score = next(
-            (r.get("score") for r in readiness_assessments if r.get("assessment_type") == "llm_readiness"),
-            None,
-        )
-        feature_columns = (state.get("agent2_full_result") or {}).get(
-            "feature_recommendation", {}
-        ).get("feature_columns") or []
-
-        python_exe = _analytics_agent_python()
-        if not Path(python_exe).exists():
-            return {
-                "agent3_body": {
-                    "status": "failed",
-                    "reason": f"Analytics Agent python not found at {python_exe} — "
-                              f"check ANALYTICS_AGENT_PATH/ANALYTICS_AGENT_PYTHON.",
-                },
-            }
-
-        tmp_path: str | None = None
-        feature_rec_path: str | None = None
-        try:
-            with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as tmp:
-                tmp.write(state["content"])
-                tmp_path = tmp.name
-
-            # Back-date the temp file's mtime so the Analytics Agent's
-            # boot_trainer.py — which retrains all 4 ML models (~15s) any
-            # time DATASET_PATH looks newer than its shipped .pkl files —
-            # doesn't retrain on every single call. A brand-new temp file
-            # would otherwise always look "newer" than the committed models.
-            old_ts = time.time() - 365 * 86400
-            os.utime(tmp_path, (old_ts, old_ts))
-
-            cmd = [python_exe, "main.py", "--query", business_question]
-            if ml_score is not None:
-                cmd += ["--ml-readiness", str(ml_score)]
-            if llm_score is not None:
-                cmd += ["--llm-readiness", str(llm_score)]
-            if feature_columns:
-                with tempfile.NamedTemporaryFile(
-                    mode="w", suffix=".json", delete=False, encoding="utf-8"
-                ) as fr_tmp:
-                    json.dump(feature_columns, fr_tmp)
-                    feature_rec_path = fr_tmp.name
-                cmd += ["--feature-recommendation-file", feature_rec_path]
-
-            # PYTHONIOENCODING=utf-8: the Analytics Agent prints emoji
-            # (e.g. "📋 Execution Plan") — Windows' default cp1252 console
-            # encoding crashes on those with UnicodeEncodeError, so this is
-            # required for the subprocess to complete at all, not optional.
-            env = {**os.environ, "DATASET_PATH": tmp_path, "PYTHONIOENCODING": "utf-8"}
-
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                cwd=settings.ANALYTICS_AGENT_PATH,
-                env=env,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            try:
-                stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(), timeout=settings.ANALYTICS_AGENT_TIMEOUT_SECONDS,
-                )
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
-                return {
-                    "agent3_body": {
-                        "status": "failed",
-                        "reason": f"Analytics Agent timed out after {settings.ANALYTICS_AGENT_TIMEOUT_SECONDS}s.",
-                    },
-                }
-
-            if proc.returncode != 0:
-                return {
-                    "agent3_body": {
-                        "status": "failed",
-                        "reason": f"Analytics Agent exited {proc.returncode}: "
-                                  f"{stderr.decode(errors='replace')[-2000:]}",
-                    },
-                }
-
-            return {
-                "agent3_body": {
-                    "status": "ok",
-                    "query": business_question,
-                    "ml_readiness_score_used": ml_score,
-                    "llm_readiness_score_used": llm_score,
-                    "response": stdout.decode(errors="replace"),
-                },
-            }
-        except Exception as e:
-            return {"agent3_body": {"status": "failed", "reason": f"Analytics Agent invocation error: {e}"}}
-        finally:
-            if tmp_path:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-            if feature_rec_path:
-                try:
-                    os.unlink(feature_rec_path)
-                except OSError:
-                    pass
+        return {"agent3_body": agent3_body}
 
     # ── Node 6: finalize ─────────────────────────────────────────────────────
 

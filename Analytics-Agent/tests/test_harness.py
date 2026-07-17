@@ -14,11 +14,17 @@ import pytest
 
 # Project paths setup
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from main import AnalyticsAgent
+from app.agents.analytics_agent.graph import run_analytics_graph
 
 # Setup simple console logging
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger("TestHarness")
+
+_DATASET = Path(r"C:\Users\dhawa\mva\Schema-Intelligence-Layer\test_data\insurance_variance_data_native.csv")
+
+pytestmark = pytest.mark.skipif(
+    not _DATASET.exists(), reason=f"Insurance test dataset not found at {_DATASET}"
+)
 
 # 12 diverse prompts to validate all intents, filters, and fallback paths
 TEST_CASES = [
@@ -114,11 +120,18 @@ TEST_CASES = [
 
 
 def run_test_case(tc: dict) -> tuple[bool, str]:
-    """Execute a single query against the agent and validate the response."""
+    """Execute a single query against the graph and validate the response."""
     try:
-        agent = AnalyticsAgent(ml_readiness_score=tc["ml_readiness"])
-        response = agent.process(tc["query"])
-        
+        result = run_analytics_graph(
+            file_content=_DATASET.read_bytes(),
+            business_question=tc["query"],
+            ml_readiness_score=tc["ml_readiness"],
+            llm_readiness_score=99.75,
+        )
+        if result["status"] != "ok":
+            return False, f"Graph reported status={result['status']}: {result['response']}"
+        response = result["response"]
+
         # Check 1: Response must be a string and not empty
         if not response or not isinstance(response, str):
             return False, "Empty or invalid response type"

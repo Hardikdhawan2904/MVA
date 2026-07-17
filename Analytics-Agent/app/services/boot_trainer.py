@@ -1,25 +1,28 @@
 """
-boot_trainer.py — Boot-Time Dataset Change Detector & Auto-Trainer
+app/services/boot_trainer.py — Startup Dataset Change Detector & Auto-Trainer
 
-Called automatically by main.py at agent startup.
+Called once from app/main.py's lifespan at service startup — previously
+called by main.py's AnalyticsAgent.__init__() on every subprocess spawn.
+Now that the service is long-lived and every request brings its own
+uploaded dataset (see app/routes/analyze.py), this check no longer means
+"is *this request's* file newer than the models" — it means "is the local
+reference dataset (DATASET_PATH, used by train.py and scripts/cli.py for
+local testing) newer than the persisted models", checked once per process
+lifetime rather than once per request.
 
 Logic:
-    1. Get the modification timestamp of the dataset CSV.
+    1. Get the modification timestamp of the reference dataset CSV.
     2. Get the timestamp of the oldest trained model file.
     3. If the dataset is NEWER than the oldest model → retrain automatically.
     4. If no models exist → retrain automatically.
     5. If models are newer than the dataset → skip training (already up to date).
-
-This prevents stale models from running predictions on updated data.
 """
 
 import logging
 import subprocess
 import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
-from config import DATASET_PATH, ML_MODEL_SAVE_DIR
+from app.config import BASE_DIR, DATASET_PATH, ML_MODEL_SAVE_DIR
 
 logger = logging.getLogger("BootTrainer")
 
@@ -38,14 +41,14 @@ _REQUIRED_MODELS = [
     "kmeans_scaler.pkl",
 ]
 
-# Ceiling on how long a boot-time retrain is allowed to block agent
+# Ceiling on how long a startup retrain is allowed to block service
 # startup — a hung train.py (e.g. a stuck Prophet/cmdstan step) shouldn't
 # be able to hang startup indefinitely.
 _TRAINING_TIMEOUT_SECONDS = 300
 
 
 def _get_dataset_mtime() -> float:
-    """Return the modification time (epoch seconds) of the dataset CSV."""
+    """Return the modification time (epoch seconds) of the reference dataset CSV."""
     if not DATASET_PATH.exists():
         raise FileNotFoundError(f"Dataset not found at: {DATASET_PATH}")
     return DATASET_PATH.stat().st_mtime
@@ -71,9 +74,9 @@ def _run_training() -> bool:
     Execute train.py as a subprocess and stream its log output.
     Returns True if training succeeded, False otherwise.
     """
-    train_script = Path(__file__).parent / "train.py"
+    train_script = BASE_DIR / "train.py"
     logger.info("=" * 60)
-    logger.info("Boot-Time Auto-Trainer: New dataset detected!")
+    logger.info("Startup Auto-Trainer: New dataset detected!")
     logger.info("Starting model retraining — this takes ~15 seconds...")
     logger.info("=" * 60)
 
@@ -86,7 +89,7 @@ def _run_training() -> bool:
         )
     except subprocess.TimeoutExpired:
         logger.error(f"Auto-Training TIMED OUT after {_TRAINING_TIMEOUT_SECONDS}s.")
-        logger.error("The agent will continue using the previous model versions.")
+        logger.error("The service will continue using the previous model versions.")
         return False
 
     if result.returncode == 0:
@@ -96,13 +99,13 @@ def _run_training() -> bool:
         return True
     else:
         logger.error(f"Auto-Training FAILED with exit code {result.returncode}.")
-        logger.error("The agent will continue using the previous model versions.")
+        logger.error("The service will continue using the previous model versions.")
         return False
 
 
 def check_and_retrain_if_needed() -> bool:
     """
-    Main entry point called by main.py at boot time.
+    Main entry point, called once from app/main.py's lifespan at startup.
 
     Returns:
         True  — if retraining was triggered and succeeded (or skipped as up to date).
@@ -114,7 +117,7 @@ def check_and_retrain_if_needed() -> bool:
 
         if oldest_model_mtime is None:
             # At least one model file is missing — must train
-            logger.info("Boot check: One or more model files missing. Training required.")
+            logger.info("Startup check: One or more model files missing. Training required.")
             return _run_training()
 
         if dataset_mtime > oldest_model_mtime:
@@ -123,18 +126,18 @@ def check_and_retrain_if_needed() -> bool:
             dataset_ts = datetime.fromtimestamp(dataset_mtime).strftime("%Y-%m-%d %H:%M:%S")
             model_ts   = datetime.fromtimestamp(oldest_model_mtime).strftime("%Y-%m-%d %H:%M:%S")
             logger.info(
-                f"Boot check: Dataset updated ({dataset_ts}) is newer than "
+                f"Startup check: Dataset updated ({dataset_ts}) is newer than "
                 f"oldest model ({model_ts}). Auto-retraining..."
             )
             return _run_training()
         else:
             # Models are up to date — skip retraining
-            logger.info("Boot check: Models are up to date. No retraining needed. ✓")
+            logger.info("Startup check: Models are up to date. No retraining needed. ✓")
             return True
 
     except FileNotFoundError as e:
-        logger.error(f"Boot check skipped: {e}")
+        logger.error(f"Startup check skipped: {e}")
         return False
     except Exception as e:
-        logger.error(f"Boot check error: {e}. Skipping auto-retrain.")
+        logger.error(f"Startup check error: {e}. Skipping auto-retrain.")
         return False

@@ -18,9 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import sys
-sys.path.insert(0, str(Path(__file__).parent))
-from config import MEMORY_CONFIG, BASE_DIR
+from app.config import MEMORY_CONFIG, BASE_DIR
 
 logger = logging.getLogger(__name__)
 
