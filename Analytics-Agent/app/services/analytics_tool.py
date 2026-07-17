@@ -69,9 +69,17 @@ class AnalyticsTool:
         actual: float,
         reference: float,
         label: str = "Reference",
+        higher_is_better: bool = True,
     ) -> dict:
         """
         Calculate absolute and percentage variance.
+
+        higher_is_better flips which sign counts as "favorable" — for a
+        ratio KPI like loss_ratio or expense_ratio (higher_is_better=False,
+        per kpi_definitions.json), coming in *below* budget is the good
+        outcome, not above. Defaults to True (revenue/premium-shaped KPIs,
+        where more than budget is favorable) so existing callers that don't
+        pass a KPI's flag keep their current behavior.
 
         Returns:
             {
@@ -88,9 +96,9 @@ class AnalyticsTool:
         )
         direction = "neutral"
         if variance_amount > 0:
-            direction = "favorable"
+            direction = "favorable" if higher_is_better else "unfavorable"
         elif variance_amount < 0:
-            direction = "unfavorable"
+            direction = "unfavorable" if higher_is_better else "favorable"
 
         result = {
             "actual": round(actual, 2),
@@ -104,11 +112,11 @@ class AnalyticsTool:
                     f"= {variance_amount:,.2f} ({pct_str})")
         return result
 
-    def variance_vs_budget(self, actual: float, budget: float) -> dict:
-        return self.variance(actual, budget, "budget")
+    def variance_vs_budget(self, actual: float, budget: float, higher_is_better: bool = True) -> dict:
+        return self.variance(actual, budget, "budget", higher_is_better)
 
-    def variance_vs_prior_year(self, actual: float, prior_year: float) -> dict:
-        return self.variance(actual, prior_year, "prior_year")
+    def variance_vs_prior_year(self, actual: float, prior_year: float, higher_is_better: bool = True) -> dict:
+        return self.variance(actual, prior_year, "prior_year", higher_is_better)
 
     # ── Growth % ──────────────────────────────────────────────────────────────
 

@@ -259,7 +259,9 @@ class AnalyticsGraphNodes:
             if budget_col and budget_col in df.columns:
                 evidence["budget"] = self.analytics.aggregate(df, budget_col, method=method)
             if "actual" in evidence and "budget" in evidence:
-                var = self.analytics.variance_vs_budget(evidence["actual"], evidence["budget"])
+                var = self.analytics.variance_vs_budget(
+                    evidence["actual"], evidence["budget"], kpi.get("higher_is_better", True),
+                )
                 evidence.update(var)
 
             return {"evidence": evidence}
@@ -297,14 +299,18 @@ class AnalyticsGraphNodes:
             if budget_col and budget_col in df.columns:
                 evidence["budget"] = self.analytics.aggregate(df, budget_col, method=method)
                 if "actual" in evidence:
-                    v = self.analytics.variance_vs_budget(evidence["actual"], evidence["budget"])
+                    v = self.analytics.variance_vs_budget(
+                        evidence["actual"], evidence["budget"], kpi.get("higher_is_better", True),
+                    )
                     evidence["variance_vs_budget_amount"] = v["variance_amount"]
                     evidence["variance_vs_budget_pct"]    = v["variance_pct"]
                     evidence["direction"]                  = v["direction"]
             if prior_yr_col and prior_yr_col in df.columns:
                 evidence["prior_year"] = self.analytics.aggregate(df, prior_yr_col, method=method)
                 if "actual" in evidence:
-                    v = self.analytics.variance_vs_prior_year(evidence["actual"], evidence["prior_year"])
+                    v = self.analytics.variance_vs_prior_year(
+                        evidence["actual"], evidence["prior_year"], kpi.get("higher_is_better", True),
+                    )
                     evidence["variance_vs_prior_year_amount"] = v["variance_amount"]
                     evidence["variance_vs_prior_year_pct"]    = v["variance_pct"]
 
@@ -334,7 +340,7 @@ class AnalyticsGraphNodes:
             if actual_col and actual_col in df_summary.columns and budget_col and budget_col in df_summary.columns:
                 actual = self.analytics.aggregate(df_summary, actual_col, method=method)
                 budget = self.analytics.aggregate(df_summary, budget_col, method=method)
-                v = self.analytics.variance_vs_budget(actual, budget)
+                v = self.analytics.variance_vs_budget(actual, budget, kpi.get("higher_is_better", True))
                 evidence.update(v)
                 total_variance = v["variance_amount"]
 

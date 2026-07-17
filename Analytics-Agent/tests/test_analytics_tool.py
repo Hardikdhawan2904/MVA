@@ -44,6 +44,29 @@ def test_variance_vs_budget_unfavorable():
     assert result["direction"] == "unfavorable"
 
 
+def test_variance_vs_budget_lower_is_better_below_budget_is_favorable():
+    # Reproduces the loss_ratio bug: actual below budget is the GOOD outcome
+    # for a "lower is better" KPI (higher_is_better=False), not unfavorable.
+    tool = AnalyticsTool()
+    result = tool.variance_vs_budget(83.71, 83.94, higher_is_better=False)
+    assert result["variance_amount"] < 0
+    assert result["direction"] == "favorable"
+
+
+def test_variance_vs_budget_lower_is_better_above_budget_is_unfavorable():
+    tool = AnalyticsTool()
+    result = tool.variance_vs_budget(105.0, 100.0, higher_is_better=False)
+    assert result["variance_amount"] > 0
+    assert result["direction"] == "unfavorable"
+
+
+def test_variance_vs_prior_year_lower_is_better_flips_direction():
+    tool = AnalyticsTool()
+    result = tool.variance_vs_prior_year(83.71, 86.56, higher_is_better=False)
+    assert result["variance_amount"] < 0
+    assert result["direction"] == "favorable"
+
+
 def test_yoy_growth():
     tool = AnalyticsTool()
     result = tool.yoy_growth(1100.0, 1000.0)
@@ -93,6 +116,9 @@ if __name__ == "__main__":
     test_aggregate_mean()
     test_variance_vs_budget_favorable()
     test_variance_vs_budget_unfavorable()
+    test_variance_vs_budget_lower_is_better_below_budget_is_favorable()
+    test_variance_vs_budget_lower_is_better_above_budget_is_unfavorable()
+    test_variance_vs_prior_year_lower_is_better_flips_direction()
     test_yoy_growth()
     test_trend_increasing()
     test_ranking()
