@@ -549,7 +549,12 @@ class AnalyticsGraphNodes:
 
     def narrate(self, state: AnalyticsState) -> dict:
         response = self.explanation.narrate(state["evidence"], state["business_question"])
-        return {"response": response}
+        # last_engine_used is set as a side effect of the narrate() call
+        # above — the only way to observe which path it actually took
+        # (readiness-gated choice vs. a Groq call that errored and fell
+        # back internally). Surfaced into state for graph.py's execution
+        # trace, not used by anything else in the graph itself.
+        return {"response": response, "llm_engine_used": self.explanation.last_engine_used}
 
     def record_memory(self, state: AnalyticsState) -> dict:
         """Runs for every path — narrated or an early-exit error string —
@@ -557,13 +562,17 @@ class AnalyticsGraphNodes:
         which branch produced the response. `evidence={}` here (not the
         real evidence dict) matches that method's existing behavior."""
         response = state.get("response", "")
+        tools_used = self._build_plan(state["intent"])
         self.memory.add_turn(
             user_query       = state["business_question"],
             intent           = state["intent"],
             kpi_name         = state["kpi_name"],
             filters          = state["filters"],
-            tools_used       = self._build_plan(state["intent"]),
+            tools_used       = tools_used,
             evidence         = {},
             response_summary = response[:300],
         )
-        return {}
+        # Also surfaced into state (not just Postgres) so graph.py's
+        # execution-trace/summary builder can reuse this exact list instead
+        # of recomputing it or needing access to the nodes instance itself.
+        return {"tools_used": tools_used}

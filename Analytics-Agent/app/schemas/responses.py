@@ -1,5 +1,7 @@
 """app/schemas/responses.py — API response contract for POST /analyze."""
 
+from typing import Any
+
 from pydantic import BaseModel
 
 
@@ -15,3 +17,10 @@ class AnalysisResponse(BaseModel):
     conversation_id: str | None = None
     ml_readiness_score_used: float | None = None
     llm_readiness_score_used: float | None = None
+    # Step-by-step decision log (intent -> ML gate/engine -> LLM gate/engine)
+    # and a compact rollup of the same, built once from the graph's final
+    # state — see app/agents/analytics_agent/graph.py::_build_execution_trace.
+    # None on a genuine unhandled failure (status="error") rather than
+    # fabricating an explanation for a crash.
+    execution_trace: list[dict[str, Any]] | None = None
+    execution_summary: dict[str, Any] | None = None

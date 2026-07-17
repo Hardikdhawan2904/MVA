@@ -29,3 +29,8 @@ class AnalyticsState(TypedDict, total=False):
 
     # ── Output ───────────────────────────────────────────────────────────────
     response: str
+
+    # ── Set by narrate() / record_memory() — read by graph.py's post-hoc
+    # execution-trace builder, not consumed inside the graph itself ────────
+    llm_engine_used: str          # "Groq" | "Template Formatter" | "Template Formatter (Groq error)"
+    tools_used: list[str]         # from _build_plan(intent), same list memory.add_turn() already gets

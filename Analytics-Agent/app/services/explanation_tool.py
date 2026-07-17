@@ -74,6 +74,12 @@ class ExplanationTool:
         self._client = None
         self._conversation_context = ""
         self.llm_readiness_score = llm_readiness_score
+        # Which path narrate() actually took on its most recent call — "Groq",
+        # "Template Formatter", or "Template Formatter (Groq error)" (readiness
+        # passed but the API call itself failed). Read by the narrate graph
+        # node to build the execution trace; there's no other way to observe
+        # this from outside, since narrate() decides internally.
+        self.last_engine_used: str | None = None
         if GROQ_API_KEY:
             try:
                 from groq import Groq
@@ -118,6 +124,7 @@ class ExplanationTool:
                 f"LLM readiness score ({self.llm_readiness_score:.2f}) below threshold "
                 f"({LLM_READINESS_THRESHOLD}) — using template formatter instead of Groq."
             )
+        self.last_engine_used = "Template Formatter"
         return self._template_format(evidence, query_context, confidence_text)
 
     # ── Groq LLM Path ─────────────────────────────────────────────────────────
@@ -162,9 +169,11 @@ narrate facts from a prior turn as if they were computed for this one."""
             narrative = response.choices[0].message.content
             narrative = self._enforce_confidence_section(narrative, confidence_text)
             logger.info(f"Groq narration complete: {len(narrative)} chars")
+            self.last_engine_used = "Groq"
             return narrative
         except Exception as e:
             logger.error(f"Groq API error: {e} — falling back to template formatter")
+            self.last_engine_used = "Template Formatter (Groq error)"
             return self._template_format(evidence, query_context, confidence_text)
 
     @staticmethod
