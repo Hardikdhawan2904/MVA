@@ -13,8 +13,6 @@ Model 5: K-Means — Risk Profile Segmentation
 import json
 import logging
 from datetime import datetime
-from pathlib import Path
-from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -174,7 +172,7 @@ class VarianceClassifier:
             from sklearn.preprocessing import LabelEncoder
             from sklearn.model_selection import train_test_split
             from sklearn.utils.class_weight import compute_sample_weight
-            from sklearn.metrics import accuracy_score, f1_score, classification_report
+            from sklearn.metrics import accuracy_score, f1_score
         except ImportError:
             return {"error": "xgboost or scikit-learn not installed"}
 

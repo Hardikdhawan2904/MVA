@@ -127,6 +127,13 @@ def run_test_case(tc: dict) -> tuple[bool, str]:
             business_question=tc["query"],
             ml_readiness_score=tc["ml_readiness"],
             llm_readiness_score=99.75,
+            # Real callers get this from the Orchestrator (Agent 1's domain
+            # classification); a direct call like this one must state its
+            # domain assumption explicitly rather than relying on an
+            # implicit fallback — see GenericDomainPlugin's docstring
+            # (Phase 4) for why silently defaulting to Insurance for any
+            # unlabeled dataset was a real bug.
+            detected_domain="Insurance",
         )
         if result["status"] != "ok":
             return False, f"Graph reported status={result['status']}: {result['response']}"

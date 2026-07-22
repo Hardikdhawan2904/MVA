@@ -13,7 +13,7 @@ matching the other agents' structure — it just reads through this module
 rather than re-parsing `agent.yaml` a second time.
 
 Priority order for settings:
-  1. app/agents/analytics_agent/agent.yaml — agent identity, role, memory, execution plans
+  1. app/agents/analytics_agent/agent.yaml — agent identity, role, memory, system prompt
   2. config/ml_config.yml                  — all ML model settings (swappable)
   3. config/business_rules.yml             — predefined insurance rules + new rules
   4. .env                                  — secrets (API keys), HOST/PORT
@@ -77,14 +77,34 @@ def _load_yaml(path: Path) -> dict:
 AGENT_CONFIG = _load_yaml(AGENT_YAML_PATH)
 ML_CONFIG    = _load_yaml(CONFIG_DIR / "ml_config.yml")
 RULES_CONFIG = _load_yaml(CONFIG_DIR / "business_rules.yml")
+# Structural-prerequisite thresholds for Stage 1's AnalyticsCapabilityResolver
+# (Agent 3 redesign) — dataset-shape checks, NOT readiness scoring. See the
+# file's own header for why these are kept separate from ML_READINESS_THRESHOLD/
+# LLM_READINESS_THRESHOLD below.
+CAPABILITY_THRESHOLDS = _load_yaml(CONFIG_DIR / "capability_thresholds.yml")
+# Stage 5's AnalyticsScheduler budget defaults (Agent 3 redesign) — see the
+# file's own header for the full rationale.
+SCHEDULING_BUDGET = _load_yaml(CONFIG_DIR / "scheduling_budget.yml")
+# Stage 6's ModelRegistry (AlgorithmSpec entries) — read directly by
+# ModelSelector at runtime, ML and deterministic algorithms registered the
+# same way. NOT to be confused with MODEL_REGISTRY_PATH above (ml/model_
+# registry.json — trained-model timestamps/metrics, a different concept
+# from a different, earlier piece of work). See config/model_registry.yml's
+# own header for the full rationale.
+ALGORITHM_REGISTRY_CONFIG = _load_yaml(CONFIG_DIR / "model_registry.yml")
 
 # ── Agent Config Accessors ────────────────────────────────────────────────────
+# Agent 3 redesign, Phase 4 (plan "zany-giggling-crayon") — dropped
+# TOOL_REGISTRY/EXECUTION_PLANS/DATASET_CTX, which read agent.yaml's
+# "tools"/"execution_plans"/"dataset_context" sections: none of the three
+# were read by any code even before this redesign (the old handlers
+# hardcoded their own tool instances/intent routing directly), and the
+# generic Stage 1-9 pipeline replaces the "execution_plans" concept
+# entirely — see nodes/pipeline.py's _build_tools_used(). agent.yaml keeps
+# those sections as human-readable documentation only.
 AGENT_IDENTITY    = AGENT_CONFIG.get("agent", {})
 AGENT_ROLE        = AGENT_CONFIG.get("role", {})
 MEMORY_CONFIG     = AGENT_CONFIG.get("memory", {})
-TOOL_REGISTRY     = AGENT_CONFIG.get("tools", [])
-EXECUTION_PLANS   = AGENT_CONFIG.get("execution_plans", {})
-DATASET_CTX       = AGENT_CONFIG.get("dataset_context", {})
 SYSTEM_PROMPT_CFG = AGENT_CONFIG.get("system_prompt", {})
 
 # ── ML Config Accessors ───────────────────────────────────────────────────────

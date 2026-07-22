@@ -8,7 +8,6 @@ Never performs calculations here — that is the Analytics Tool's job.
 
 import logging
 from pathlib import Path
-from typing import Any
 
 import duckdb
 import pandas as pd
@@ -16,6 +15,53 @@ import pandas as pd
 from app.config import DATASET_PATH
 
 logger = logging.getLogger(__name__)
+
+# Agent 3 redesign, Phase 2 (plan "zany-giggling-crayon") — these were
+# hardcoded directly inside get_variance_drivers()/get_ratio_data() before;
+# now they're the *default* argument values, sourced from the Insurance
+# domain plugin (domain_plugins/insurance/plugin.py) at call sites that
+# want a different domain's columns, with the exact same content as
+# before when a caller (e.g. today's Insurance-only pipeline.py) doesn't
+# override them — byte-identical behavior, genuinely parameterizable.
+DEFAULT_VARIANCE_DRIVER_COLUMNS = [
+    "exposure_growth_variance",
+    "premium_rate_variance",
+    "policy_mix_variance",
+    "claim_frequency_variance",
+    "claim_severity_variance",
+    "catastrophe_loss_variance",
+    "fraud_leakage_variance",
+    "premium_nonpayment_variance",
+    "fx_translation_variance",
+    "reinsurance_recovery_variance",
+    "reserve_development_variance",
+    "acquisition_cost_variance",
+    "claims_processing_delay_variance",
+    "one_off_variance_amount",
+    "variance_vs_budget_amount",
+    "variance_vs_prior_year_amount",
+    "primary_variance_driver",
+    "secondary_variance_driver",
+    "variance_category",
+    "structural_vs_timing_flag",
+    "recurring_flag",
+    "controllable_flag",
+    "root_cause_tag",
+]
+
+DEFAULT_RATIO_COLUMNS = [
+    "reporting_date", "year", "quarter",
+    "region", "country_name", "insurance_segment", "line_of_business",
+    "loss_ratio_actual", "loss_ratio_budget", "loss_ratio_prior_year",
+    "expense_ratio_actual", "expense_ratio_budget",
+    "combined_ratio_actual", "combined_ratio_budget",
+    "claim_frequency_actual", "claim_frequency_budget",
+    "average_claim_severity_actual", "average_claim_severity_budget",
+    "renewal_rate_actual",
+    "policy_lapse_rate_actual",
+    "reserve_adequacy_ratio_actual",
+    "premium_collection_rate_actual",
+]
 
 
 class SQLTool:
@@ -35,14 +81,15 @@ class SQLTool:
     request from whichever dataset happened to be loaded first.
     """
 
-    def __init__(self, dataset_path: str | Path | None = None):
+    def __init__(self, dataset_path: str | Path | None = None, view_name: str = "insurance"):
         csv_path = str(dataset_path or DATASET_PATH)
+        self.view_name = view_name
         self.conn = duckdb.connect(database=":memory:")
         self.conn.execute(f"""
-            CREATE VIEW insurance AS
+            CREATE VIEW {view_name} AS
             SELECT * FROM read_csv_auto('{csv_path}', ALL_VARCHAR=FALSE, HEADER=TRUE)
         """)
-        logger.info(f"DuckDB view 'insurance' registered from: {csv_path}")
+        logger.info(f"DuckDB view '{view_name}' registered from: {csv_path}")
 
     # ── Core Executor ─────────────────────────────────────────────────────────
 
@@ -84,7 +131,7 @@ class SQLTool:
             limit     : Row limit.
         """
         select_clause = ", ".join(columns)
-        sql = f"SELECT {select_clause} FROM insurance"
+        sql = f"SELECT {select_clause} FROM {self.view_name}"
 
         # Column names come from code (KPI/hierarchy definitions), not user
         # input, so they stay as identifiers in the SQL text — only filter
@@ -154,33 +201,14 @@ class SQLTool:
         self,
         filters: dict | None = None,
         group_by: list[str] | None = None,
+        variance_columns: list[str] | None = None,
     ) -> pd.DataFrame:
-        """Retrieve all pre-computed variance driver columns."""
-        variance_cols = [
-            "exposure_growth_variance",
-            "premium_rate_variance",
-            "policy_mix_variance",
-            "claim_frequency_variance",
-            "claim_severity_variance",
-            "catastrophe_loss_variance",
-            "fraud_leakage_variance",
-            "premium_nonpayment_variance",
-            "fx_translation_variance",
-            "reinsurance_recovery_variance",
-            "reserve_development_variance",
-            "acquisition_cost_variance",
-            "claims_processing_delay_variance",
-            "one_off_variance_amount",
-            "variance_vs_budget_amount",
-            "variance_vs_prior_year_amount",
-            "primary_variance_driver",
-            "secondary_variance_driver",
-            "variance_category",
-            "structural_vs_timing_flag",
-            "recurring_flag",
-            "controllable_flag",
-            "root_cause_tag",
-        ]
+        """Retrieve all pre-computed variance driver columns.
+
+        variance_columns defaults to DEFAULT_VARIANCE_DRIVER_COLUMNS
+        (Insurance's exact list, unchanged) — pass a different domain's
+        columns to reuse this query shape elsewhere."""
+        variance_cols = list(variance_columns) if variance_columns is not None else list(DEFAULT_VARIANCE_DRIVER_COLUMNS)
         dim_cols = group_by or []
         select_cols = list(set(dim_cols + variance_cols))
 
@@ -200,21 +228,13 @@ class SQLTool:
 
         return self.get_kpi_data(select_cols, filters=filters, group_by=group_by)
 
-    def get_ratio_data(self, filters: dict | None = None) -> pd.DataFrame:
-        """Retrieve all pre-computed ratio columns for anomaly detection."""
-        ratio_cols = [
-            "reporting_date", "year", "quarter",
-            "region", "country_name", "insurance_segment", "line_of_business",
-            "loss_ratio_actual", "loss_ratio_budget", "loss_ratio_prior_year",
-            "expense_ratio_actual", "expense_ratio_budget",
-            "combined_ratio_actual", "combined_ratio_budget",
-            "claim_frequency_actual", "claim_frequency_budget",
-            "average_claim_severity_actual", "average_claim_severity_budget",
-            "renewal_rate_actual",
-            "policy_lapse_rate_actual",
-            "reserve_adequacy_ratio_actual",
-            "premium_collection_rate_actual",
-        ]
+    def get_ratio_data(self, filters: dict | None = None, ratio_columns: list[str] | None = None) -> pd.DataFrame:
+        """Retrieve all pre-computed ratio columns for anomaly detection.
+
+        ratio_columns defaults to DEFAULT_RATIO_COLUMNS (Insurance's exact
+        list, unchanged) — pass a different domain's columns to reuse this
+        query shape elsewhere."""
+        ratio_cols = list(ratio_columns) if ratio_columns is not None else list(DEFAULT_RATIO_COLUMNS)
         return self.get_kpi_data(ratio_cols, filters=filters)
 
     def get_time_series(
@@ -235,7 +255,7 @@ class SQLTool:
             SELECT
                 {group_by_col} AS ds,
                 SUM(TRY_CAST("{metric_column}" AS DOUBLE)) AS y
-            FROM insurance
+            FROM {self.view_name}
             {where_clause}
             GROUP BY {group_by_col}
             ORDER BY {group_by_col}

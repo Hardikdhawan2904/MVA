@@ -82,3 +82,65 @@ def test_enforce_is_case_insensitive_on_heading():
 
     assert "wrong text here" not in fixed
     assert correct_text in fixed
+
+
+# ── _template_format — multi-analysis "report mode" (Phase 4) ──────────────
+
+def test_template_format_renders_each_nested_analysis_under_its_own_heading():
+    """EvidenceBuilder.to_narration_context()'s multi-analysis shape nests
+    each analysis's own flat evidence under analyses[analysis_type] — the
+    template formatter must not render this as an empty report."""
+    tool = ExplanationTool(llm_readiness_score=0.0)  # force template path, no Groq client needed
+    evidence = {
+        "analyses": {
+            "trend": {"direction": "increasing", "overall_change_pct": 12.5},
+            "segmentation": {"segments": {"Low": 3, "High": 7}, "total_records": 10},
+        }
+    }
+    response = tool.narrate(evidence, "Analyze this dataset")
+
+    assert "# Trend" in response
+    assert "# Segmentation" in response
+    assert "Direction" in response and "increasing" in response
+    assert "Risk Segmentation Profiles" in response  # segments dict still gets its special rendering
+    assert "Low" in response and "High" in response
+    # Only the combined report's own top-level context line survives —
+    # not one repeated per nested section.
+    assert response.count("Query context:") == 1
+
+
+def test_template_format_empty_analyses_dict_falls_through_to_flat_path():
+    tool = ExplanationTool(llm_readiness_score=0.0)
+    response = tool.narrate({"analyses": {}}, "q")
+    assert "Analysis completed for query" in response
+
+
+# ── _template_format — group comparison rendering (Phase 4 follow-up) ──────
+
+def test_template_format_renders_group_comparison_not_just_scalar_fields():
+    """Regression test: ComparativeAnalyzer's evidence (groups/highest/
+    lowest — AnalyticsTool.compare_groups()) used to render as just
+    'Group Count'/'Method' with the actual comparison silently dropped,
+    since groups/highest/lowest are lists/dicts the generic scalar-only
+    key-value loop skips. Caught via live testing against a Banking
+    dataset with no domain plugin."""
+    tool = ExplanationTool(llm_readiness_score=0.0)
+    evidence = {
+        "groups": [
+            {"region": "EMEA", "revenue": 500.0, "rank": 1},
+            {"region": "APAC", "revenue": 300.0, "rank": 2},
+        ],
+        "highest": {"region": "EMEA", "revenue": 500.0, "rank": 1},
+        "lowest": {"region": "APAC", "revenue": 300.0, "rank": 2},
+        "group_count": 2,
+        "method": "sum",
+    }
+    response = tool.narrate(evidence, "Compare revenue by region")
+
+    assert "## Group Comparison" in response
+    assert "EMEA" in response and "500.0" in response
+    assert "APAC" in response and "300.0" in response
+    assert "Highest" in response
+    assert "Lowest" in response
+    # Still renders the scalar fields too — additive, not a replacement.
+    assert "Group Count" in response

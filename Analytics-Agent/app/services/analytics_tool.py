@@ -13,9 +13,6 @@ Never explains results — that is the Explanation Tool's job.
 """
 
 import logging
-from pathlib import Path
-from typing import Any
-import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -262,18 +259,59 @@ class AnalyticsTool:
         logger.info(f"contribution({value_col}): computed for {len(df)} categories")
         return df[[label_col, value_col, "contribution_pct"]]
 
-    # ── Compound KPI Calculations ─────────────────────────────────────────────
+    # ── Group Comparison ──────────────────────────────────────────────────────
 
-    def calculate_loss_ratio(
-        self, net_claims_incurred: float, net_earned_premium: float
-    ) -> float:
-        """Loss Ratio = (Net Claims Incurred / Net Earned Premium) * 100"""
-        if net_earned_premium == 0:
-            return float("nan")
-        return round((net_claims_incurred / net_earned_premium) * 100, 2)
+    def compare_groups(
+        self,
+        df: pd.DataFrame,
+        value_col: str,
+        group_col: str,
+        method: str = "sum",
+    ) -> dict:
+        """
+        Compare a metric across a categorical dimension's groups —
+        Stage 7's "comparative_analysis" purpose (Agent 3 redesign, plan
+        "zany-giggling-crayon"): the domain-agnostic generalization of
+        today's ad-hoc groupby calls, registered in model_registry.yml
+        alongside trend()/rank() under the same AnalyticsTool entry.
 
-    def calculate_combined_ratio(
-        self, loss_ratio: float, expense_ratio: float
-    ) -> float:
-        """Combined Ratio = Loss Ratio + Expense Ratio"""
-        return round(loss_ratio + expense_ratio, 2)
+        Returns:
+            {
+              "groups": [{group_col: ..., value_col: ..., "rank": ...}],
+              "highest": {...}, "lowest": {...},
+              "group_count": int,
+            }
+        """
+        if value_col not in df.columns or group_col not in df.columns:
+            return {"error": f"Columns not found for comparison: {value_col!r}, {group_col!r}"}
+
+        work = df[[group_col, value_col]].copy()
+        work[value_col] = pd.to_numeric(work[value_col], errors="coerce")
+        work = work.dropna()
+        if work.empty:
+            return {"error": f"No numeric data in column '{value_col}' to compare."}
+
+        fn_map = {"sum": "sum", "mean": "mean", "median": "median", "min": "min", "max": "max", "count": "count"}
+        if method not in fn_map:
+            raise ValueError(f"Unknown aggregation method '{method}'. Choose from: {list(fn_map.keys())}")
+
+        grouped = (
+            work.groupby(group_col)[value_col]
+                .agg(fn_map[method])
+                .sort_values(ascending=False)
+                .reset_index()
+        )
+        grouped.index = grouped.index + 1
+        grouped.index.name = "rank"
+        grouped = grouped.reset_index()
+        records = grouped.round(2).to_dict(orient="records")
+
+        result = {
+            "groups": records,
+            "highest": records[0] if records else None,
+            "lowest": records[-1] if records else None,
+            "group_count": len(records),
+            "method": method,
+        }
+        logger.info(f"compare_groups({value_col} by {group_col}): {len(records)} groups")
+        return result

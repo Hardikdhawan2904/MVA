@@ -12,15 +12,12 @@ Model 2: LightGBM — Multi-feature regression
 
 import json
 import logging
-import pickle
 from datetime import datetime
-from pathlib import Path
-from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from app.config import ML_DIR, MODEL_REGISTRY_PATH, FORECAST_PERIODS
+from app.config import MODEL_REGISTRY_PATH, FORECAST_PERIODS
 from app.services.ml.persistence import load_pickle
 
 logger = logging.getLogger(__name__)

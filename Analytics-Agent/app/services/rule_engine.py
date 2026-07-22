@@ -17,7 +17,6 @@ import logging
 import re
 import yaml
 from pathlib import Path
-from typing import Any
 
 from app.config import (
     KPI_DEFINITIONS_PATH, DRILL_DOWN_HIERARCHY_PATH,
@@ -92,15 +91,47 @@ class RuleEngine:
     - New rules added dynamically (stored back in YAML)
     """
 
-    def __init__(self):
-        self._kpis            = self._load_json(KPI_DEFINITIONS_PATH).get("kpis", {})
-        self._hierarchy       = self._load_json(DRILL_DOWN_HIERARCHY_PATH)
-        self._predefined_rules= list(PREDEFINED_RULES)
-        self._new_rules       = list(NEW_RULES)
-        self._thresholds      = dict(KPI_THRESHOLDS)
-        self._variance_drivers= dict(VARIANCE_DRIVERS)
-        self._flag_decoding   = dict(FLAG_DECODING)
-        self._supported_ops   = list(SUPPORTED_OPS)
+    def __init__(
+        self,
+        kpi_definitions_path: str | Path | None = None,
+        hierarchy_path: str | Path | None = None,
+        business_rules_path: str | Path | None = None,
+    ):
+        """Agent 3 redesign, Phase 2 (plan "zany-giggling-crayon") — these
+        paths used to be fixed module-level imports; now they're
+        constructor params, defaulting to the exact same app.config-sourced
+        paths/pre-parsed values (Insurance's content, unchanged) when not
+        overridden, so every existing caller (RuleEngine()) behaves
+        byte-identically. A domain plugin supplies its own paths to reuse
+        this class's loader/lookup/eval mechanics for a different domain.
+        """
+        self._kpi_definitions_path = Path(kpi_definitions_path) if kpi_definitions_path else KPI_DEFINITIONS_PATH
+        self._hierarchy_path = Path(hierarchy_path) if hierarchy_path else DRILL_DOWN_HIERARCHY_PATH
+        self._business_rules_path = Path(business_rules_path) if business_rules_path else BUSINESS_RULES_YAML_PATH
+
+        if kpi_definitions_path or hierarchy_path or business_rules_path:
+            # A domain plugin supplied at least one override — load fresh
+            # from the (possibly custom) paths rather than reusing the
+            # app-startup-time pre-parsed globals below, which were parsed
+            # from the default Insurance paths only.
+            self._kpis = self._load_json(self._kpi_definitions_path).get("kpis", {})
+            self._hierarchy = self._load_json(self._hierarchy_path)
+            rules_config = self._load_yaml_file(self._business_rules_path)
+            self._predefined_rules = list(rules_config.get("predefined_rules", []))
+            self._new_rules = list(rules_config.get("new_rules", []))
+            self._thresholds = dict(rules_config.get("thresholds", {}))
+            self._variance_drivers = dict(rules_config.get("variance_drivers", {}))
+            self._flag_decoding = dict(rules_config.get("flags", {}))
+            self._supported_ops = list(rules_config.get("supported_operations", []))
+        else:
+            self._kpis            = self._load_json(KPI_DEFINITIONS_PATH).get("kpis", {})
+            self._hierarchy       = self._load_json(DRILL_DOWN_HIERARCHY_PATH)
+            self._predefined_rules= list(PREDEFINED_RULES)
+            self._new_rules       = list(NEW_RULES)
+            self._thresholds      = dict(KPI_THRESHOLDS)
+            self._variance_drivers= dict(VARIANCE_DRIVERS)
+            self._flag_decoding   = dict(FLAG_DECODING)
+            self._supported_ops   = list(SUPPORTED_OPS)
 
         # Validate loaded configurations using Pydantic
         self._validate_configs()
@@ -144,6 +175,14 @@ class RuleEngine:
             return {}
         with open(path, "r") as f:
             return json.load(f)
+
+    @staticmethod
+    def _load_yaml_file(path: Path) -> dict:
+        if not path.exists():
+            logger.warning(f"Rules file not found: {path}")
+            return {}
+        with open(path, "r") as f:
+            return yaml.safe_load(f) or {}
 
     # ── Business Rule Evaluation ──────────────────────────────────────────────
 
@@ -231,10 +270,10 @@ class RuleEngine:
     def _persist_new_rules(self):
         """Write updated new_rules back to config/business_rules.yml."""
         try:
-            with open(BUSINESS_RULES_YAML_PATH, "r") as f:
+            with open(self._business_rules_path, "r") as f:
                 full_config = yaml.safe_load(f) or {}
             full_config["new_rules"] = self._new_rules
-            with open(BUSINESS_RULES_YAML_PATH, "w") as f:
+            with open(self._business_rules_path, "w") as f:
                 yaml.dump(full_config, f, default_flow_style=False, allow_unicode=True)
             logger.info(f"business_rules.yml updated: {len(self._new_rules)} dynamic rules")
         except Exception as e:
@@ -343,7 +382,7 @@ class RuleEngine:
         self._kpis[key] = definition
         # Persist
         all_data = {"kpis": self._kpis}
-        with open(KPI_DEFINITIONS_PATH, "w") as f:
+        with open(self._kpi_definitions_path, "w") as f:
             json.dump(all_data, f, indent=2)
         logger.info(f"New KPI added to Rule Engine: '{key}'")
         return True

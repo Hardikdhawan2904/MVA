@@ -10,7 +10,6 @@ load those persisted artifacts.
 
 import logging
 import pickle
-from pathlib import Path
 from typing import Any
 
 from app.config import ML_MODEL_SAVE_DIR

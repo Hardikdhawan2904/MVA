@@ -22,7 +22,6 @@ for the life of the request, rather than failing the question being asked.
 
 import logging
 from datetime import datetime, timezone
-from typing import Any
 
 from app.config import MEMORY_CONFIG
 from app.services import database

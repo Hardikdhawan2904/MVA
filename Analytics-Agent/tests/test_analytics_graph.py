@@ -1,13 +1,18 @@
 """tests/test_analytics_graph.py — Routing tests for the Analytics Agent's
 LangGraph (app/agents/analytics_agent/graph.py + nodes/pipeline.py).
 
-Focuses on the two router functions that determine graph topology at
-runtime (route_by_intent, route_after_handler) plus a real end-to-end
-invocation per intent confirming the conditional edges actually wire the
-entry node's detected intent to the matching handler — not a full
-behavioral test of each handler's evidence-building logic (that's covered
-by test_analytics_tool.py, test_ml_persistence.py, test_rule_engine.py, and
-test_harness.py's response-content assertions).
+Agent 3 redesign, Phase 4 (plan "zany-giggling-crayon") — rewritten for
+the new Stage 1-9 linear topology. There's no more per-intent dispatch
+into 7 different handler nodes (route_by_intent/route_after_handler are
+gone); AnalyticsPlanner/AnalyticsScheduler narrow a request down instead
+of graph routing. The two routers that remain are
+route_after_interpret (early-exit when a named KPI couldn't be resolved)
+and route_after_execute (early-exit when nothing could be planned, or the
+single scheduled analysis produced no evidence).
+
+Focuses on graph wiring, not each analyzer's evidence-building logic
+(covered by test_analyzers.py, test_kpi_analyzers.py, and
+test_harness.py's live response-content assertions).
 """
 
 import sys
@@ -29,36 +34,33 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(scope="module")
 def nodes():
-    return AnalyticsGraphNodes(dataset_path=str(_DATASET), conversation_id=str(uuid.uuid4()))
+    # Real callers get detected_domain from the Orchestrator (Agent 1's
+    # domain classification); a direct call like this fixture must state
+    # its domain assumption explicitly — see GenericDomainPlugin's
+    # docstring (Phase 4) for why silently defaulting to Insurance for any
+    # unlabeled dataset was a real bug.
+    return AnalyticsGraphNodes(dataset_path=str(_DATASET), conversation_id=str(uuid.uuid4()), detected_domain="Insurance")
 
 
-# ── route_by_intent ──────────────────────────────────────────────────────────
+# ── route_after_interpret ────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("intent,expected_node", [
-    ("forecast", "forecast"),
-    ("anomaly", "anomaly"),
-    ("segment", "segment"),
-    ("root_cause", "root_cause"),
-    ("variance", "variance"),
-    ("trend", "trend"),
-    ("show_kpi", "show_kpi"),
-    # "ytd" is a real _INTENT_MAP entry, but main.py's if/elif dispatch never
-    # special-cased it — it fell through to the `else` branch, i.e. show_kpi.
-    ("ytd", "show_kpi"),
-    ("something_unrecognized", "show_kpi"),
-])
-def test_route_by_intent(nodes, intent, expected_node):
-    assert nodes.route_by_intent({"intent": intent}) == expected_node
+def test_route_after_interpret_response_skips_planning(nodes):
+    assert nodes.route_after_interpret({"response": "KPI not found"}) == "record_memory"
 
 
-# ── route_after_handler ──────────────────────────────────────────────────────
-
-def test_route_after_handler_response_skips_narrate(nodes):
-    assert nodes.route_after_handler({"response": "already answered"}) == "record_memory"
+def test_route_after_interpret_no_response_proceeds_to_planning(nodes):
+    assert nodes.route_after_interpret({"question_intent": None}) == "plan_analytics"
 
 
-def test_route_after_handler_evidence_goes_to_narrate(nodes):
-    assert nodes.route_after_handler({"evidence": {"kpi": "x"}}) == "narrate"
+# ── route_after_execute ──────────────────────────────────────────────────────
+
+def test_route_after_execute_response_skips_narrate(nodes):
+    assert nodes.route_after_execute({"response": "already answered"}) == "record_memory"
+
+
+def test_route_after_execute_evidence_builder_goes_to_narrate(nodes):
+    from app.services.evidence.evidence_builder import EvidenceBuilder
+    assert nodes.route_after_execute({"evidence_builder": EvidenceBuilder()}) == "narrate"
 
 
 # ── Graph compilation ─────────────────────────────────────────────────────────
@@ -69,23 +71,34 @@ def test_graph_builds_and_compiles():
     assert hasattr(graph, "invoke")
 
 
-# ── End-to-end: entry node's detected intent reaches the matching handler ────
+# ── End-to-end: business question resolves to the expected single analysis ──
 
-@pytest.mark.parametrize("query,expected_intent", [
-    ("Show Gross Written Premium for FY2025", "show_kpi"),
-    ("Show loss ratio variance vs budget for EMEA", "variance"),
+@pytest.mark.parametrize("query,expected_analysis_type", [
+    ("Show Gross Written Premium for FY2025", "kpi_summary"),
+    ("Show loss ratio variance vs budget for EMEA", "kpi_variance"),
     ("Why did underwriting result decline in FY2025?", "root_cause"),
     ("Show the trend of loss ratio over time", "trend"),
     ("Forecast underwriting result for next 6 months", "forecast"),
-    ("Detect anomalies in loss ratios", "anomaly"),
-    ("Segment portfolio by risk profile", "segment"),
+    ("Detect anomalies in loss ratios", "anomaly_detection"),
+    ("Segment portfolio by risk profile", "segmentation"),
 ])
-def test_end_to_end_intent_routing(query, expected_intent):
+def test_end_to_end_single_analysis_routing(query, expected_analysis_type):
+    """Each of these queries matches the old system's single-intent
+    behavior exactly — one scheduled analysis, not a multi-analysis
+    report — confirmed via the backward-compat adapter's state["intent"]
+    (see nodes/pipeline.py::_adapt_evidence_for_narration)."""
     conversation_id = str(uuid.uuid4())
-    graph = build_analytics_graph(dataset_path=str(_DATASET), conversation_id=conversation_id)
+    graph = build_analytics_graph(dataset_path=str(_DATASET), conversation_id=conversation_id, detected_domain="Insurance")
     final_state = graph.invoke(
-        {"business_question": query, "dataset_path": str(_DATASET), "conversation_id": conversation_id},
+        {
+            "business_question": query, "dataset_path": str(_DATASET), "conversation_id": conversation_id,
+            # run_analytics_graph() (the real entry point) always populates
+            # these — the old topology never read them from state (MLTool's
+            # readiness score came from the AnalyticsGraphNodes constructor
+            # arg instead), but Stage 1's resolve_capabilities does.
+            "ml_readiness_score": 99.75, "llm_readiness_score": 99.75,
+        },
         config={"recursion_limit": 25},
     )
-    assert final_state["intent"] == expected_intent
+    assert final_state["intent"] == expected_analysis_type
     assert final_state.get("response")

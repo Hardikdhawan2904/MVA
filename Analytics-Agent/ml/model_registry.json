@@ -14,7 +14,7 @@
       "anomaly_count": 50,
       "total_records": 1000,
       "contamination": 0.05,
-      "timestamp": "2026-07-16T18:54:21.450230"
+      "timestamp": "2026-07-22T00:09:22.091819"
     },
     "xgboost_classifier": {
       "algorithm": "XGBoost",
@@ -42,17 +42,12 @@
     "kmeans_segmentation": {
       "algorithm": "KMeans",
       "n_clusters": 3,
-      "distribution": {
-        "0": 547,
-        "1": 105,
-        "2": 348
-      },
-      "timestamp": "2026-07-16T18:53:58.435516"
+      "timestamp": "2026-07-22T00:08:55.099721"
     },
     "prophet_forecast": {
       "algorithm": "Prophet",
       "periods": 6,
-      "timestamp": "2026-07-17T21:00:55.077072"
+      "timestamp": "2026-07-22T00:09:18.834944"
     }
   }
 }

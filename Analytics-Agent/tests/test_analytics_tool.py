@@ -99,18 +99,6 @@ def test_contribution():
     assert abs(contrib["contribution_pct"].sum() - 100.0) < 0.01
 
 
-def test_loss_ratio_calculation():
-    tool = AnalyticsTool()
-    lr = tool.calculate_loss_ratio(750.0, 1000.0)
-    assert lr == 75.0
-
-
-def test_combined_ratio():
-    tool = AnalyticsTool()
-    cr = tool.calculate_combined_ratio(75.0, 28.0)
-    assert cr == 103.0
-
-
 if __name__ == "__main__":
     test_aggregate_sum()
     test_aggregate_mean()
@@ -123,6 +111,4 @@ if __name__ == "__main__":
     test_trend_increasing()
     test_ranking()
     test_contribution()
-    test_loss_ratio_calculation()
-    test_combined_ratio()
     print("✅ All Analytics Tool tests passed")

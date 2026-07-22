@@ -8,6 +8,7 @@ that made Phase 2's orchestrator rewrite (subprocess → httpx call) possible.
 
 import json
 import logging
+from typing import Any
 
 from fastapi import APIRouter, UploadFile, File, Form
 
@@ -53,8 +54,37 @@ async def analyze(
         default=None,
         description="Same as ml_readiness_breakdown, for Agent 2's llm_readiness assessment.",
     ),
+    column_profiles: str | None = Form(
+        default=None,
+        description="Optional JSON string (a list) of Agent 2's per-column semantic classification "
+                    "(column_profiles from its profiling result) — builds a richer DatasetContext for "
+                    "the Agent 3 redesign's generic analytics pipeline. Inert if omitted; falls back to "
+                    "local schema inference. Never blocks the request if malformed.",
+    ),
+    hierarchy: str | None = Form(
+        default=None,
+        description="Optional JSON string (a dict) of Agent 2's detected drill-down hierarchy for this "
+                    "dataset. Inert if omitted or malformed.",
+    ),
+    charts: str | None = Form(
+        default=None,
+        description="Optional JSON string (a list) of Agent 2's pre-selected chart candidates for this "
+                    "dataset. Inert if omitted or malformed.",
+    ),
+    full_feature_recommendation: str | None = Form(
+        default=None,
+        description="Optional JSON string (a dict) of Agent 2's complete feature_recommendation object "
+                    "(target_column, problem_type, recommended_approach, feature/drop columns, "
+                    "confidence) — distinct from the simpler `feature_recommendation` list above. Inert "
+                    "if omitted or malformed.",
+    ),
+    detected_domain: str | None = Form(
+        default=None,
+        description="Optional — Agent 1's business_domain classification for this upload, as forwarded "
+                    "by the Orchestrator. Inert this phase.",
+    ),
 ) -> AnalysisResponse:
-    def _parse_json_field(raw: str | None, field_name: str) -> dict | None:
+    def _parse_json_field(raw: str | None, field_name: str) -> Any | None:
         if not raw:
             return None
         try:
@@ -66,6 +96,12 @@ async def analyze(
     parsed_feature_recommendation = _parse_json_field(feature_recommendation, "feature_recommendation")
     parsed_ml_breakdown = _parse_json_field(ml_readiness_breakdown, "ml_readiness_breakdown")
     parsed_llm_breakdown = _parse_json_field(llm_readiness_breakdown, "llm_readiness_breakdown")
+    parsed_column_profiles = _parse_json_field(column_profiles, "column_profiles")
+    parsed_hierarchy = _parse_json_field(hierarchy, "hierarchy")
+    parsed_charts = _parse_json_field(charts, "charts")
+    parsed_full_feature_recommendation = _parse_json_field(
+        full_feature_recommendation, "full_feature_recommendation",
+    )
 
     content = await file.read()
 
@@ -78,6 +114,11 @@ async def analyze(
         feature_recommendation=parsed_feature_recommendation,
         ml_readiness_breakdown=parsed_ml_breakdown,
         llm_readiness_breakdown=parsed_llm_breakdown,
+        column_profiles=parsed_column_profiles,
+        hierarchy=parsed_hierarchy,
+        charts=parsed_charts,
+        full_feature_recommendation=parsed_full_feature_recommendation,
+        detected_domain=detected_domain,
     )
 
     return AnalysisResponse(**result)

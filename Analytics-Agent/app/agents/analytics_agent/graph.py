@@ -1,20 +1,25 @@
 """app/agents/analytics_agent/graph.py — Analytics Agent pipeline as a
 LangGraph StateGraph.
 
-Topology:
+Topology (Agent 3 redesign, Phase 4 — plan "zany-giggling-crayon"):
 
-  detect_intent_and_filters ─(route_by_intent)─┬─→ handle_show_kpi ────┐
-                                                ├─→ handle_variance ────┤
-                                                ├─→ handle_root_cause ──┤
-                                                ├─→ handle_trend ───────┤
-                                                ├─→ handle_forecast ────┤
-                                                ├─→ handle_anomaly ─────┤
-                                                └─→ handle_segment ─────┤
-                                                                        │
-                                     (route_after_handler) ─────────────┤
-                    "response" already set (early-exit: KPI not found,  │
-                    no data for the filters) ──────────────→ record_memory → END
-                    "evidence" set, needs narration ─→ narrate → record_memory → END
+  build_dataset_context (Stage 0)
+    → resolve_capabilities (Stage 1)
+    → discover_kpis (Stage 2)
+    → interpret_question (Stage 3 + KPI/filter resolution)
+    → plan_analytics (Stage 4)
+    → schedule (Stage 5)
+    → execute_analyses (Stage 6+7) ─(route_after_execute)─┬─→ narrate (Stage 9) → record_memory → END
+                                                            └─→ record_memory → END
+                    "response" already set (early-exit: nothing could be
+                    planned, or the single scheduled analysis produced no
+                    evidence) skips narrate, exactly like the old
+                    route_after_handler's early-exit shape did.
+
+Single linear chain — no more per-intent dispatch into 7 different handler
+nodes; AnalyticsPlanner/AnalyticsScheduler (Stages 4-5) are what narrow a
+request down, not graph routing. See nodes/pipeline.py's module docstring
+and the plan's "Phase 4 Detailed Design" section for the full rationale.
 
 Built fresh per request — never a shared singleton. See
 nodes/pipeline.py's module docstring for why: every request analyzes a
@@ -40,16 +45,22 @@ from app.config import ML_READINESS_THRESHOLD, LLM_READINESS_THRESHOLD, MODEL_RE
 
 logger = logging.getLogger(__name__)
 
-_HANDLER_INTENTS = ("show_kpi", "variance", "root_cause", "trend", "forecast", "anomaly", "segment")
+_PIPELINE_NODES = (
+    "resolve_capabilities", "discover_kpis", "interpret_question",
+    "plan_analytics", "schedule", "execute_analyses",
+)
 
-# intent -> (model used when ml_readiness passes, deterministic fallback name)
-# Only the 3 intents that actually gate on ml_readiness appear here — the
-# fallback name is descriptive-only (the real "why" comes from the handler's
-# own evidence["fallback_reason"], reused verbatim below).
+# analysis_type -> (model used when ml_readiness passes, deterministic
+# fallback name). Only the 3 analysis types that actually gate on
+# ml_readiness appear here — the fallback name is descriptive-only (the
+# real "why" comes from the analyzer's own evidence["fallback_reason"],
+# reused verbatim below). Keys match the vocabulary Stages 1-7 already
+# ship/test ("anomaly_detection"/"segmentation", not the old handlers'
+# "anomaly"/"segment" names).
 _ML_GATED_ENGINES = {
     "forecast": "Prophet",
-    "anomaly": "IsolationForest",
-    "segment": "K-Means",
+    "anomaly_detection": "IsolationForest",
+    "segmentation": "K-Means",
 }
 
 # engine display name -> its key in ml/model_registry.json. Prophet is
@@ -69,6 +80,11 @@ def build_analytics_graph(
     ml_readiness_score: float = 99.75,
     llm_readiness_score: float = 99.75,
     feature_recommendation: list[dict] | None = None,
+    column_profiles: list[dict] | None = None,
+    hierarchy: dict | None = None,
+    charts: list[dict] | None = None,
+    full_feature_recommendation: dict | None = None,
+    detected_domain: str | None = None,
 ):
     """Compile the Analytics Agent StateGraph. Call once per request — see
     module docstring."""
@@ -78,35 +94,44 @@ def build_analytics_graph(
         ml_readiness_score=ml_readiness_score,
         llm_readiness_score=llm_readiness_score,
         feature_recommendation=feature_recommendation,
+        column_profiles=column_profiles,
+        hierarchy=hierarchy,
+        charts=charts,
+        full_feature_recommendation=full_feature_recommendation,
+        detected_domain=detected_domain,
     )
 
     g = StateGraph(AnalyticsState)
 
-    g.add_node("detect_intent_and_filters", nodes.detect_intent_and_filters)
-    g.add_node("handle_show_kpi", nodes.handle_show_kpi)
-    g.add_node("handle_variance", nodes.handle_variance)
-    g.add_node("handle_root_cause", nodes.handle_root_cause)
-    g.add_node("handle_trend", nodes.handle_trend)
-    g.add_node("handle_forecast", nodes.handle_forecast)
-    g.add_node("handle_anomaly", nodes.handle_anomaly)
-    g.add_node("handle_segment", nodes.handle_segment)
+    g.add_node("build_dataset_context", nodes.build_dataset_context)
+    g.add_node("resolve_capabilities", nodes.resolve_capabilities)
+    g.add_node("discover_kpis", nodes.discover_kpis)
+    g.add_node("interpret_question", nodes.interpret_question)
+    g.add_node("plan_analytics", nodes.plan_analytics)
+    g.add_node("schedule", nodes.schedule)
+    g.add_node("execute_analyses", nodes.execute_analyses)
     g.add_node("narrate", nodes.narrate)
     g.add_node("record_memory", nodes.record_memory)
 
     g.set_entry_point(get_entry_point())
+    g.add_edge("build_dataset_context", "resolve_capabilities")
+    g.add_edge("resolve_capabilities", "discover_kpis")
+    g.add_edge("discover_kpis", "interpret_question")
 
     g.add_conditional_edges(
-        "detect_intent_and_filters",
-        nodes.route_by_intent,
-        {intent: f"handle_{intent}" for intent in _HANDLER_INTENTS},
+        "interpret_question",
+        nodes.route_after_interpret,
+        {"plan_analytics": "plan_analytics", "record_memory": "record_memory"},
     )
 
-    for intent in _HANDLER_INTENTS:
-        g.add_conditional_edges(
-            f"handle_{intent}",
-            nodes.route_after_handler,
-            {"narrate": "narrate", "record_memory": "record_memory"},
-        )
+    g.add_edge("plan_analytics", "schedule")
+    g.add_edge("schedule", "execute_analyses")
+
+    g.add_conditional_edges(
+        "execute_analyses",
+        nodes.route_after_execute,
+        {"narrate": "narrate", "record_memory": "record_memory"},
+    )
 
     g.add_edge("narrate", "record_memory")
     g.add_edge("record_memory", END)
@@ -179,12 +204,106 @@ def _model_version_for_engine(engine: str, registry: dict) -> dict | None:
 def _node_for_step(step: str) -> str:
     """Map a trace entry's "step" back to the LangGraph node name that
     produced it, so per-step durations (measured by node name during
-    graph.stream()) can be attached to the right trace entry."""
+    graph.stream()) can be attached to the right trace entry.
+
+    Agent 3 redesign, Phase 4 — there's no more per-intent handle_{step}
+    node; every analysis-type step (whichever analyzer ran) was produced
+    by the single execute_analyses node."""
     if step == "intent_detection":
-        return "detect_intent_and_filters"
+        return "interpret_question"
     if step == "narration":
         return "narrate"
-    return f"handle_{step}"
+    return "execute_analyses"
+
+
+def _narration_trace_entry(final_state: dict) -> dict | None:
+    """The narration trace entry — identical logic for both the single-
+    and multi-analysis trace shapes, factored out so Phase 4's new
+    multi-analysis branch doesn't duplicate it."""
+    llm_engine = final_state.get("llm_engine_used")
+    if not llm_engine:
+        return None
+    llm_score = final_state.get("llm_readiness_score")
+    llm_passed = llm_score is not None and llm_score >= LLM_READINESS_THRESHOLD
+    llm_breakdown = final_state.get("llm_readiness_breakdown")
+    gate = {
+        "name": "llm_readiness", "score": llm_score, "threshold": LLM_READINESS_THRESHOLD,
+        "passed": llm_passed, "breakdown": llm_breakdown,
+    }
+    if llm_engine == "Groq":
+        reason = f"LLM readiness ({llm_score:.1f}%) met the {LLM_READINESS_THRESHOLD}% threshold — narrated by Groq."
+    elif llm_passed:
+        reason = (f"LLM readiness ({llm_score:.1f}%) met the {LLM_READINESS_THRESHOLD}% threshold, "
+                  f"but the Groq call itself failed — fell back to the template formatter.")
+    else:
+        reason = (f"LLM readiness ({llm_score:.1f}%) below the {LLM_READINESS_THRESHOLD}% "
+                  f"threshold — used the template formatter instead of Groq.")
+    breakdown_summary = _summarize_breakdown(llm_breakdown)
+    if breakdown_summary:
+        reason += f" {breakdown_summary}"
+    return {"step": "narration", "engine": llm_engine, "gate": gate, "reason": reason}
+
+
+def _build_multi_analysis_trace(
+    final_state: dict, entries: list, elapsed_seconds: float, node_durations_ms: dict[str, float] | None,
+) -> tuple[list[dict], dict]:
+    """New in Phase 4 — "report mode": more than one analysis was
+    scheduled (only reachable when no curated KPI/keyword narrows the
+    plan to a single analysis, e.g. a bare "analyze this dataset" against
+    a wide non-Insurance upload). There is no existing single-intent
+    behavior to preserve here (Insurance's flow never produces more than
+    1-2 scheduled analyses) — built directly from each Evidence's own
+    reasons/model_metadata/fallback_metadata, which already contain
+    everything needed; no registry re-derivation required."""
+    trace: list[dict] = [{
+        "step": "intent_detection", "engine": None, "gate": None,
+        "reason": f"Report mode — {len(entries)} analyses scheduled",
+    }]
+
+    ml_engine: str | None = None
+    any_ml_blocked = False
+    for analysis_type, analyzer_name, evidence in entries:
+        reason = "; ".join(evidence.reasons) if evidence.reasons else "Deterministic calculation."
+        if evidence.model_metadata:
+            engine = evidence.model_metadata["algorithm"]
+            ml_engine = ml_engine or engine
+            gate = {
+                "name": "ml_readiness", "score": final_state.get("ml_readiness_score"),
+                "threshold": ML_READINESS_THRESHOLD, "passed": True,
+                "breakdown": final_state.get("ml_readiness_breakdown"),
+            }
+        else:
+            fallback = evidence.fallback_metadata or {}
+            engine = fallback.get("fallback_applied", analyzer_name)
+            blocked = bool(fallback.get("ml_readiness_blocked"))
+            any_ml_blocked = any_ml_blocked or blocked
+            gate = {
+                "name": "ml_readiness", "score": final_state.get("ml_readiness_score"),
+                "threshold": ML_READINESS_THRESHOLD, "passed": False,
+                "breakdown": final_state.get("ml_readiness_breakdown"),
+            } if blocked else None
+        trace.append({"step": analysis_type, "engine": engine, "gate": gate, "reason": reason})
+
+    narration_entry = _narration_trace_entry(final_state)
+    if narration_entry:
+        trace.append(narration_entry)
+
+    if node_durations_ms:
+        for entry in trace:
+            node_name = _node_for_step(entry["step"])
+            if node_name in node_durations_ms:
+                entry["duration_ms"] = round(node_durations_ms[node_name], 1)
+
+    llm_engine_used = final_state.get("llm_engine_used")
+    summary = {
+        "intent": "report",
+        "tools_used": final_state.get("tools_used", []),
+        "ml_engine": ml_engine,
+        "narration_engine": llm_engine_used,
+        "execution_time_seconds": round(elapsed_seconds, 3),
+        "fallback_used": bool(any_ml_blocked or (llm_engine_used is not None and llm_engine_used != "Groq")),
+    }
+    return trace, summary
 
 
 def _build_execution_trace(
@@ -192,18 +311,26 @@ def _build_execution_trace(
 ) -> tuple[list[dict], dict]:
     """Derive a step-by-step decision trace and a compact summary from the
     graph's final state, built once after graph.invoke() returns rather
-    than having every handler node append its own trace entry inline.
+    than having every node append its own trace entry inline.
 
-    This works because the handlers already leave enough of a signal behind:
-    the 3 ML-gated handlers only ever set evidence["ml_readiness_blocked"]
-    on their fallback branch (its absence means the model path ran), and
-    narrate()/record_memory() surface llm_engine_used/tools_used into state
-    specifically so this function doesn't need direct access to the nodes
-    instance itself. Mirrors MVA-use-case-latest-one's
-    data_profiling_agent/graph.py::_state_to_pipeline_result — adapt raw
-    graph state into a structured result in one place, not scattered
-    across nodes.
+    Agent 3 redesign, Phase 4 — kept as an *adapter*, not rewritten (per
+    the plan's own original risk mitigation): nodes/pipeline.py's
+    execute_analyses populates state["intent"]/state["evidence"] exactly
+    as the old handlers did for the single-scheduled-analysis case (100%
+    of today's Insurance flow) — Evidence.flatten() already merges
+    fallback_metadata's ml_readiness_blocked/fallback_reason/
+    fallback_applied under those exact keys, so this function's read
+    pattern below needed zero changes for that case. Multi-analysis
+    "report mode" branches out to _build_multi_analysis_trace() instead.
+    Mirrors MVA-use-case-latest-one's data_profiling_agent/graph.py::
+    _state_to_pipeline_result — adapt raw graph state into a structured
+    result in one place, not scattered across nodes.
     """
+    evidence_builder = final_state.get("evidence_builder")
+    entries = evidence_builder.all() if evidence_builder else []
+    if len(entries) > 1:
+        return _build_multi_analysis_trace(final_state, entries, elapsed_seconds, node_durations_ms)
+
     intent = final_state.get("intent", "unknown")
     kpi_name = final_state.get("kpi_name")
     evidence = final_state.get("evidence")
@@ -317,6 +444,11 @@ def run_analytics_graph(
     feature_recommendation: list[dict] | None = None,
     ml_readiness_breakdown: dict | None = None,
     llm_readiness_breakdown: dict | None = None,
+    column_profiles: list[dict] | None = None,
+    hierarchy: dict | None = None,
+    charts: list[dict] | None = None,
+    full_feature_recommendation: dict | None = None,
+    detected_domain: str | None = None,
 ) -> dict[str, Any]:
     """
     Write the uploaded dataset to a temp CSV, build+invoke the graph against
@@ -335,6 +467,14 @@ def run_analytics_graph(
     caller has it (the Orchestrator does; a direct /analyze call may not).
     Surfaced in execution_trace's gate objects so the readiness score can
     explain itself, not just report a number.
+
+    column_profiles/hierarchy/charts/full_feature_recommendation/
+    detected_domain (Agent 3 redesign, Phase 0 — plan "zany-giggling-
+    crayon"): Agent 2's per-column semantic classification, when forwarded
+    by the Orchestrator. Consumed by build_dataset_context (Stage 0) to
+    build a rich DatasetContext instead of falling back to
+    LocalSchemaInferer. Inert this phase — no existing handler reads the
+    result yet.
     """
     conversation_id = conversation_id or str(uuid.uuid4())
     tmp_path: str | None = None
@@ -349,6 +489,11 @@ def run_analytics_graph(
             ml_readiness_score=ml_readiness_score,
             llm_readiness_score=llm_readiness_score,
             feature_recommendation=feature_recommendation,
+            column_profiles=column_profiles,
+            hierarchy=hierarchy,
+            charts=charts,
+            full_feature_recommendation=full_feature_recommendation,
+            detected_domain=detected_domain,
         )
 
         initial_state: AnalyticsState = {

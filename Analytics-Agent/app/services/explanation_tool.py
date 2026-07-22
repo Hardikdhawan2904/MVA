@@ -13,8 +13,6 @@ STRICT CONSTRAINTS:
 import json
 import logging
 import re
-from pathlib import Path
-from typing import Any
 
 from app.config import (
     GROQ_API_KEY, GROQ_MODEL, GROQ_TEMPERATURE, GROQ_MAX_TOKENS,
@@ -193,11 +191,32 @@ narrate facts from a prior turn as if they were computed for this one."""
         Rule-based formatter — no LLM, no hallucination.
         Produces a structured response from the evidence dict.
         """
+        # Agent 3 redesign, Phase 4 (plan "zany-giggling-crayon") —
+        # EvidenceBuilder.to_narration_context()'s multi-analysis "report
+        # mode" shape nests each analysis's own flat evidence dict under
+        # analyses[analysis_type]; Groq already handles this fine (it just
+        # reads the nested JSON), but this formatter's key-value loop below
+        # only understands top-level scalars, so a bare recursive call
+        # renders each nested analysis using the exact same single-analysis
+        # logic below, then joins them under per-analysis headings — no
+        # duplication of the special-case rendering blocks.
+        if isinstance(evidence.get("analyses"), dict) and evidence["analyses"]:
+            sections = [f"Query context: {query_context}", "## Summary",
+                        f"Multi-analysis report — {len(evidence['analyses'])} analyses completed for query: '{query_context}'."]
+            for analysis_type, sub_evidence in evidence["analyses"].items():
+                sub_confidence_level, sub_confidence_text = self._compute_confidence(sub_evidence)
+                sub_report = self._template_format(sub_evidence, query_context, sub_confidence_text)
+                # Strip the per-section "Query context" line the recursive
+                # call adds — only the top of the combined report needs it.
+                sub_report = "\n".join(l for l in sub_report.split("\n") if not l.startswith("Query context:"))
+                sections.append(f"\n# {analysis_type.replace('_', ' ').title()}\n{sub_report}")
+            return "\n".join(sections)
+
         lines = []
 
         # Embed original query context at the top to satisfy verification keyword checks
         lines.append(f"Query context: {query_context}")
-        
+
         lines.append("## Summary")
         if "summary" in evidence:
             lines.append(evidence["summary"])
@@ -219,8 +238,9 @@ narrate facts from a prior turn as if they were computed for this one."""
                 
         # Main key-value print
         skip_keys = {
-            "summary", "driver_breakdown", "flags", "query_context", 
-            "anomalies", "anomalies_detected", "segments", "forecast", "filters"
+            "summary", "driver_breakdown", "flags", "query_context",
+            "anomalies", "anomalies_detected", "segments", "forecast", "filters",
+            "groups", "highest", "lowest",
         }
         for k, v in evidence.items():
             if k in skip_keys:
@@ -249,6 +269,22 @@ narrate facts from a prior turn as if they were computed for this one."""
             lines.append("\n## Risk Segmentation Profiles")
             for risk_profile, count in evidence["segments"].items():
                 lines.append(f"• **{risk_profile}**: {count} records")
+
+        # Render group comparisons (AnalyticsTool.compare_groups() —
+        # ComparativeAnalyzer, Stage 7) — group/value column names are
+        # dynamic (whatever the request compared), so render whatever keys
+        # each record actually has rather than assuming fixed ones.
+        if evidence.get("groups") and isinstance(evidence["groups"], list):
+            lines.append("\n## Group Comparison")
+            for item in evidence["groups"][:8]:
+                rank = item.get("rank", "?")
+                item_str = ", ".join(f"{k}: {v}" for k, v in item.items() if k != "rank")
+                lines.append(f"{rank}. {item_str}")
+            highest, lowest = evidence.get("highest"), evidence.get("lowest")
+            if highest:
+                lines.append("\n**Highest**: " + ", ".join(f"{k}: {v}" for k, v in highest.items() if k != "rank"))
+            if lowest:
+                lines.append("**Lowest**: " + ", ".join(f"{k}: {v}" for k, v in lowest.items() if k != "rank"))
 
         # Render forecast points
         if "forecast" in evidence:

@@ -11,16 +11,20 @@ Never guesses. Only returns evidence from the data.
 """
 
 import logging
-from pathlib import Path
-from typing import Any
 
 import pandas as pd
-import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# The 14 pre-computed variance driver columns in the dataset
-VARIANCE_DRIVER_COLUMNS = [
+# Agent 3 redesign, Phase 2 (plan "zany-giggling-crayon") — these were
+# module-level constants read directly by analyse() before; now they're
+# RootCauseTool's constructor defaults, sourced from the Insurance domain
+# plugin's get_driver_columns() at call sites that want a different
+# domain's drivers, byte-identical when not overridden. This is the
+# "labeled-driver mode" from the plan — always kept exactly as today for
+# any dataset that actually has pre-computed, pre-labeled driver columns
+# like this one does.
+DEFAULT_VARIANCE_DRIVER_COLUMNS = [
     "exposure_growth_variance",
     "premium_rate_variance",
     "policy_mix_variance",
@@ -37,7 +41,7 @@ VARIANCE_DRIVER_COLUMNS = [
     "one_off_variance_amount",
 ]
 
-DRIVER_LABELS = {
+DEFAULT_DRIVER_LABELS = {
     "exposure_growth_variance":        "Exposure Growth",
     "premium_rate_variance":           "Premium Rate",
     "policy_mix_variance":             "Policy Mix",
@@ -54,12 +58,32 @@ DRIVER_LABELS = {
     "one_off_variance_amount":         "One-Off / Exceptional",
 }
 
+# Backward-compatible aliases — some callers/tests may still import the old
+# module-level names directly.
+VARIANCE_DRIVER_COLUMNS = DEFAULT_VARIANCE_DRIVER_COLUMNS
+DRIVER_LABELS = DEFAULT_DRIVER_LABELS
+
 
 class RootCauseTool:
     """
     Decomposes variance into its constituent drivers and ranks them
     by magnitude and contribution percentage.
+
+    driver_columns/driver_labels default to Insurance's exact 14 pre-
+    computed drivers (labeled-driver mode, per the plan) — pass a
+    different domain's driver columns/labels to reuse this tool's ranking/
+    contribution-percentage machinery elsewhere. When a dataset has no
+    labeled driver columns at all, a later phase's correlation-based mode
+    is the generic default; this class only ever implements labeled mode.
     """
+
+    def __init__(
+        self,
+        driver_columns: list[str] | None = None,
+        driver_labels: dict[str, str] | None = None,
+    ):
+        self.driver_columns = list(driver_columns) if driver_columns is not None else list(DEFAULT_VARIANCE_DRIVER_COLUMNS)
+        self.driver_labels = dict(driver_labels) if driver_labels is not None else dict(DEFAULT_DRIVER_LABELS)
 
     def analyse(
         self,
@@ -86,7 +110,7 @@ class RootCauseTool:
         """
         driver_results = []
 
-        for col in VARIANCE_DRIVER_COLUMNS:
+        for col in self.driver_columns:
             if col not in df.columns:
                 continue
             series = pd.to_numeric(df[col], errors="coerce").dropna()
@@ -95,7 +119,7 @@ class RootCauseTool:
             amount = series.sum()
             driver_results.append({
                 "driver":  col,
-                "label":   DRIVER_LABELS.get(col, col),
+                "label":   self.driver_labels.get(col, col),
                 "amount":  round(amount, 2),
             })
 

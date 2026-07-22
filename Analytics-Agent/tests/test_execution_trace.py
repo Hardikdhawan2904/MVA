@@ -58,7 +58,7 @@ def test_ml_gated_happy_path_reports_model_and_passed_gate():
 
 def test_ml_gated_fallback_path_reports_fallback_engine_and_failed_gate():
     state = {
-        "intent": "anomaly",
+        "intent": "anomaly_detection",
         "evidence": {
             "ml_readiness_blocked": True,
             "ml_readiness_score": 40.0,
@@ -72,7 +72,7 @@ def test_ml_gated_fallback_path_reports_fallback_engine_and_failed_gate():
     }
     trace, summary = _build_execution_trace(state, elapsed_seconds=0.5)
 
-    ml_step = next(s for s in trace if s["step"] == "anomaly")
+    ml_step = next(s for s in trace if s["step"] == "anomaly_detection")
     assert ml_step["engine"] == "Deterministic Z-Score ratio anomaly detection (analytics_tool.rank)"
     assert ml_step["gate"]["passed"] is False
     assert ml_step["reason"] == state["evidence"]["fallback_reason"]
@@ -265,27 +265,32 @@ def test_model_version_returns_none_for_unknown_engine_or_empty_registry():
 
 def test_ml_gated_happy_path_attaches_model_version():
     state = {
-        "intent": "anomaly",
+        "intent": "anomaly_detection",
         "evidence": {"kpi": "x"},  # no ml_readiness_blocked -> model path ran
         "response": "...",
         "ml_readiness_score": 92.0,
     }
     trace, _ = _build_execution_trace(state, elapsed_seconds=0.2)
-    step = next(s for s in trace if s["step"] == "anomaly")
+    step = next(s for s in trace if s["step"] == "anomaly_detection")
     assert step["model_version"]["accuracy_metric"] is None
-    assert step["model_version"]["trained_at"] == _REGISTRY["isolation_forest"]["timestamp"]
+    # Read fresh rather than the module-level _REGISTRY snapshot — this
+    # pre-existing shared JSON file (ml/model_registry.json) gets rewritten
+    # by other tests' live IsolationForest fits (e.g. test_analytics_graph.py's
+    # end-to-end anomaly_detection case) that may run before this one in a
+    # full-suite pass; _build_execution_trace() itself always reads live.
+    assert step["model_version"]["trained_at"] == _load_model_registry()["isolation_forest"]["timestamp"]
 
 
 def test_ml_gated_fallback_path_has_no_model_version():
     state = {
-        "intent": "anomaly",
+        "intent": "anomaly_detection",
         "evidence": {"ml_readiness_blocked": True, "ml_readiness_score": 40.0,
                       "fallback_reason": "below threshold", "fallback_applied": "Z-Score fallback"},
         "response": "...",
         "ml_readiness_score": 40.0,
     }
     trace, _ = _build_execution_trace(state, elapsed_seconds=0.2)
-    step = next(s for s in trace if s["step"] == "anomaly")
+    step = next(s for s in trace if s["step"] == "anomaly_detection")
     assert "model_version" not in step  # nothing ran, so nothing to version
 
 
@@ -327,7 +332,10 @@ def test_duration_ms_attached_when_node_durations_supplied():
         "llm_engine_used": "Groq",
         "llm_readiness_score": 99.0,
     }
-    node_durations_ms = {"detect_intent_and_filters": 4.7, "handle_show_kpi": 345.3, "narrate": 12.1}
+    # Agent 3 redesign, Phase 4 — there's no more per-intent handle_{step}
+    # node; interpret_question produces "intent_detection" and the single
+    # execute_analyses node produces every analysis-type step.
+    node_durations_ms = {"interpret_question": 4.7, "execute_analyses": 345.3, "narrate": 12.1}
     trace, _ = _build_execution_trace(state, elapsed_seconds=0.5, node_durations_ms=node_durations_ms)
 
     intent_step = next(s for s in trace if s["step"] == "intent_detection")
@@ -364,6 +372,7 @@ def test_end_to_end_forecast_happy_path_reports_prophet():
         conversation_id=str(uuid.uuid4()),
         ml_readiness_score=99.75,
         llm_readiness_score=99.75,
+        detected_domain="Insurance",  # see test_harness.py's run_test_case() comment
     )
     assert result["status"] == "ok"
     # Only asserting the ML engine selection here — narration engine depends
@@ -389,10 +398,15 @@ def test_end_to_end_forecast_fallback_path_reports_historical_trend():
         conversation_id=str(uuid.uuid4()),
         ml_readiness_score=40.0,
         llm_readiness_score=99.75,
+        detected_domain="Insurance",  # see test_harness.py's run_test_case() comment
     )
     assert result["status"] == "ok"
     assert result["execution_summary"]["fallback_used"] is True
-    assert "Historical Trend" in result["execution_summary"]["ml_engine"]
+    # "Linear Trend" (Stage 6's registry-driven deterministic forecast
+    # strategy, Phase 1/2 — InsurancePlugin pins it as the closest match to
+    # today's analytics_tool.trend()) replaces the old bespoke
+    # "Historical Trend Analysis (analytics_tool.trend)" display string.
+    assert "Linear Trend" in result["execution_summary"]["ml_engine"]
     forecast_step = next(s for s in result["execution_trace"] if s["step"] == "forecast")
     assert "model_version" not in forecast_step  # fallback path — no model ran, nothing to version
     assert forecast_step["duration_ms"] > 0
