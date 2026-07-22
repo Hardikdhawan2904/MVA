@@ -1,0 +1,252 @@
+"""app/services/planning/planning_rules.py — Stage 4 of the Agent 3
+redesign (plan "zany-giggling-crayon"): PlanningRule implementations.
+
+Every rule matches on `ColumnContext.semantic_role`/`semantic_type`
+combinations (Agent 2's classification, or LocalSchemaInferer's fallback)
+— never a column name, never a domain check. Each rule only ever checks
+`capability_profile.is_analysis_type_possible(...)` (structural, never
+execution — that's the Model Selector's job in Stage 6) before proposing
+an analysis type, so a structurally-impossible analysis is never even
+added to the plan in the first place. Chain of Responsibility, same shape
+as `kpi_discovery.kpi_discovery_rules` — every rule runs, contributions
+concatenated, deduplicated by `analysis_type` afterward (first occurrence
+wins, rules ordered most-specific-first).
+"""
+
+from __future__ import annotations
+
+from typing import Callable
+
+from app.services.capability_resolution.models import CapabilityProfile
+from app.services.dataset_context.models import (
+    DatasetContext, SEMANTIC_ROLE_DIMENSION, SEMANTIC_ROLE_IDENTIFIER, SEMANTIC_ROLE_METRIC,
+)
+from app.services.kpi_discovery.models import DiscoveredKPI
+from app.services.planning.models import PlannedAnalysis
+from app.services.question_interpreter.models import QuestionIntent
+
+_CARDINALITY_RATIO_MIN = 0.01
+_CARDINALITY_RATIO_MAX = 0.5
+
+RuleFn = Callable[[DatasetContext, CapabilityProfile, list, "QuestionIntent | None"], list]
+
+
+def _workable_dimensions(ctx: DatasetContext):
+    return [
+        c for c in ctx.columns_with_role(SEMANTIC_ROLE_DIMENSION)
+        if c.cardinality_ratio is not None and _CARDINALITY_RATIO_MIN <= c.cardinality_ratio <= _CARDINALITY_RATIO_MAX
+    ]
+
+
+def _propose(capability_profile: CapabilityProfile, analysis_type: str, target_columns, rationale, priority, is_kpi_grounded=False):
+    if not capability_profile.is_analysis_type_possible(analysis_type):
+        return None
+    return PlannedAnalysis(
+        analysis_type=analysis_type, target_columns=list(target_columns),
+        rationale=rationale, priority=priority, is_kpi_grounded=is_kpi_grounded,
+    )
+
+
+# ── Rules, most-specific first (dedup keeps the first occurrence) ──────────
+
+def rule_target_column_driven(
+    ctx: DatasetContext, cp: CapabilityProfile, kpis: list[DiscoveredKPI], question_intent: QuestionIntent | None = None,
+) -> list[PlannedAnalysis]:
+    rec = ctx.feature_recommendation or {}
+    target = rec.get("target_column")
+    problem_type = rec.get("problem_type")
+    if not target or problem_type not in ("classification", "regression"):
+        return []
+    out = []
+    p = _propose(cp, problem_type, [target], f"Target column '{target}' identified with problem_type='{problem_type}'", priority=1)
+    if p:
+        out.append(p)
+    fi = _propose(cp, "feature_importance", [target], f"Explain what drives target column '{target}'", priority=1)
+    if fi:
+        out.append(fi)
+    return out
+
+
+def rule_kpi_grounded_root_cause(
+    ctx: DatasetContext, cp: CapabilityProfile, kpis: list[DiscoveredKPI], question_intent: QuestionIntent | None = None,
+) -> list[PlannedAnalysis]:
+    """root_cause has no capability gate (always structurally available,
+    deterministic-primary by design — see Stage 7) — proposed whenever a
+    discovered/curated KPI exists to explain, OR the question itself names
+    a real metric column (Phase 4.6). Whether this survives into the final
+    plan for a *specific* question is Stage 3's job (question
+    intersection), not decided here.
+
+    Phase 4.6: when the question names a column directly
+    (question_intent.preferred_metrics, populated by
+    BusinessQuestionInterpreter from a phrase match against the dataset's
+    own column names), that wins over discovered_kpis[0] — a KPI-discovery
+    rule race is not a reliable signal of what the question actually asked
+    about (e.g. "Success Rate" being discovered before "Variance vs
+    Budget" purely by ALL_RULES order says nothing about relevance to a
+    "why did net profit decline" question). is_kpi_grounded=False here:
+    this is question-grounded, not KPI-grounded, and the Scheduler already
+    never trims an explicitly-requested analysis regardless of that flag.
+
+    Otherwise, target_columns is deliberately just [kpi.source_columns[0]]
+    — the single primary metric, never the rest of source_columns. A
+    discovered KPI's other source columns (e.g. Variance vs Budget's
+    reference/budget column, Profit Margin's expense column) are *inputs
+    to computing the KPI*, not a pre-labeled driver decomposition —
+    RootCauseAnalyzer would otherwise treat that lone column as "the
+    driver" and trivially explain "100% of the variance" with it, a real
+    correctness bug caught via live testing against a Finance dataset with
+    no domain plugin. A genuine driver decomposition only ever comes from
+    a domain plugin's get_driver_columns() (InsurancePlugin.enhance_plan()
+    replaces this rule's proposal entirely when one applies); with no
+    plugin, correlation-based mode (RootCauseAnalyzer's generic default)
+    is the honest answer.
+    """
+    if question_intent and question_intent.preferred_metrics:
+        metric_col = question_intent.preferred_metrics[0]
+        p = _propose(
+            cp, "root_cause", [metric_col],
+            f"Question names metric column '{metric_col}' directly", priority=1, is_kpi_grounded=False,
+        )
+        return [p] if p else []
+    if not kpis:
+        return []
+    kpi = kpis[0]
+    p = _propose(
+        cp, "root_cause", kpi.source_columns[:1],
+        f"Root-cause decomposition available for discovered KPI '{kpi.name}'", priority=2, is_kpi_grounded=True,
+    )
+    return [p] if p else []
+
+
+def rule_temporal_metric(
+    ctx: DatasetContext, cp: CapabilityProfile, kpis: list[DiscoveredKPI], question_intent: QuestionIntent | None = None,
+) -> list[PlannedAnalysis]:
+    temporal = [c for c in ctx.columns if c.is_temporal]
+    metrics = ctx.columns_with_role(SEMANTIC_ROLE_METRIC)
+    if not temporal or not metrics:
+        return []
+    # [temporal, metric] — Stage 7's ForecastAnalyzer/TrendAnalyzer/
+    # TimeSeriesAnalyzer all read target_columns[0] as the temporal column
+    # and target_columns[1] as the metric to analyze (matching
+    # InsurancePlugin.enhance_plan()'s same convention); correlation/
+    # anomaly_detection don't care about column order, so this single
+    # ordering serves every analysis_type this rule proposes.
+    cols = [temporal[0].name, metrics[0].name]
+    rationale = f"Temporal column '{temporal[0].name}' + metric column '{metrics[0].name}' present"
+    out = []
+    for analysis_type, priority in [("trend", 2), ("forecast", 2), ("correlation", 3), ("anomaly_detection", 3), ("time_series_analysis", 2)]:
+        p = _propose(cp, analysis_type, cols, rationale, priority)
+        if p:
+            out.append(p)
+    return out
+
+
+def rule_dimension_metric(
+    ctx: DatasetContext, cp: CapabilityProfile, kpis: list[DiscoveredKPI], question_intent: QuestionIntent | None = None,
+) -> list[PlannedAnalysis]:
+    dims = _workable_dimensions(ctx)
+    metrics = ctx.columns_with_role(SEMANTIC_ROLE_METRIC)
+    if not dims or not metrics:
+        return []
+    # Phase 4.6: prefer whichever metric/dimension the question actually
+    # named, if it's among this rule's own structurally-valid candidates
+    # (a mentioned dimension might not be "workable" — cardinality-
+    # filtered out — in which case falling back to dims[0] is correct).
+    metric_names = {m.name for m in metrics}
+    dim_names = {d.name for d in dims}
+    preferred_metric = next(
+        (m for m in (question_intent.preferred_metrics if question_intent else []) if m in metric_names), None,
+    )
+    preferred_dim = next(
+        (d for d in (question_intent.preferred_dimensions if question_intent else []) if d in dim_names), None,
+    )
+    metric_name = preferred_metric or metrics[0].name
+    dim_name = preferred_dim or dims[0].name
+    cols = [metric_name, dim_name]
+    rationale = f"Categorical dimension '{dim_name}' + metric column '{metric_name}' present"
+    out = []
+    for analysis_type, priority in [("clustering", 4), ("segmentation", 4), ("comparative_analysis", 4), ("ranking", 4)]:
+        p = _propose(cp, analysis_type, cols, rationale, priority)
+        if p:
+            out.append(p)
+    return out
+
+
+def rule_numeric_pair_no_target(
+    ctx: DatasetContext, cp: CapabilityProfile, kpis: list[DiscoveredKPI], question_intent: QuestionIntent | None = None,
+) -> list[PlannedAnalysis]:
+    rec = ctx.feature_recommendation or {}
+    if rec.get("target_column"):
+        return []  # rule_target_column_driven already covers this case
+    metrics = ctx.columns_with_role(SEMANTIC_ROLE_METRIC)
+    if len(metrics) < 2:
+        return []
+    cols = [c.name for c in metrics[:2]]
+    rationale = f"{len(metrics)} numeric metric columns, no identified target"
+    out = []
+    for analysis_type, priority in [("correlation", 6), ("clustering", 6), ("outlier_detection", 6)]:
+        p = _propose(cp, analysis_type, cols, rationale, priority)
+        if p:
+            out.append(p)
+    return out
+
+
+def rule_two_categoricals(
+    ctx: DatasetContext, cp: CapabilityProfile, kpis: list[DiscoveredKPI], question_intent: QuestionIntent | None = None,
+) -> list[PlannedAnalysis]:
+    dims = _workable_dimensions(ctx)
+    if len(dims) < 2:
+        return []
+    cols = [c.name for c in dims[:2]]
+    rationale = f"{len(dims)} workable categorical columns"
+    out = []
+    for analysis_type, priority in [("association_rules", 5), ("distribution_analysis", 5)]:
+        p = _propose(cp, analysis_type, cols, rationale, priority)
+        if p:
+            out.append(p)
+    return out
+
+
+def rule_identifier_monetary_transaction_shaped(
+    ctx: DatasetContext, cp: CapabilityProfile, kpis: list[DiscoveredKPI], question_intent: QuestionIntent | None = None,
+) -> list[PlannedAnalysis]:
+    identifiers = ctx.columns_with_role(SEMANTIC_ROLE_IDENTIFIER)
+    metrics = ctx.columns_with_role(SEMANTIC_ROLE_METRIC)
+    if not identifiers or not metrics:
+        return []
+    cols = [identifiers[0].name, metrics[0].name]
+    rationale = f"Identifier '{identifiers[0].name}' + monetary column '{metrics[0].name}' — transaction-shaped"
+    out = []
+    for analysis_type, priority in [("anomaly_detection", 3), ("segmentation", 4), ("ranking", 4)]:
+        p = _propose(cp, analysis_type, cols, rationale, priority)
+        if p:
+            out.append(p)
+    return out
+
+
+def rule_hierarchy_detected(
+    ctx: DatasetContext, cp: CapabilityProfile, kpis: list[DiscoveredKPI], question_intent: QuestionIntent | None = None,
+) -> list[PlannedAnalysis]:
+    if ctx.hierarchy is None or not ctx.hierarchy.level_columns:
+        return []
+    cols = list(ctx.hierarchy.level_columns)
+    rationale = f"Hierarchy detected: {' > '.join(cols)}"
+    out = []
+    for analysis_type, priority in [("comparative_analysis", 5), ("ranking", 5)]:
+        p = _propose(cp, analysis_type, cols, rationale, priority)
+        if p:
+            out.append(p)
+    return out
+
+
+ALL_RULES: list[RuleFn] = [
+    rule_target_column_driven,
+    rule_kpi_grounded_root_cause,
+    rule_temporal_metric,
+    rule_dimension_metric,
+    rule_identifier_monetary_transaction_shaped,
+    rule_hierarchy_detected,
+    rule_two_categoricals,
+    rule_numeric_pair_no_target,
+]

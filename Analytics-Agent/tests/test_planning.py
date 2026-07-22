@@ -1,0 +1,272 @@
+"""tests/test_planning.py — Agent 3 redesign, Phase 1, Stage 4 (plan
+"zany-giggling-crayon"): AnalyticsPlanner.
+"""
+
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+import pandas as pd
+import pytest
+
+from app.services.capability_resolution.analytics_capability_resolver import AnalyticsCapabilityResolver
+from app.services.capability_resolution.models import ALL_CAPABILITIES, CapabilityProfile, CapabilityResult, ExecutionResult, StructuralResult
+from app.services.dataset_context.local_schema_inferer import LocalSchemaInferer
+from app.services.dataset_context.models import ColumnContext, DatasetContext, HierarchyInfo
+from app.services.kpi_discovery.models import DiscoveredKPI, FINANCIAL_MEASURE
+from app.services.kpi_discovery.semantic_kpi_discovery import SemanticKPIDiscovery
+from app.services.planning.analytics_planner import AnalyticsPlanner
+from app.services.question_interpreter.business_question_interpreter import BusinessQuestionInterpreter
+from app.services.question_interpreter.models import QuestionIntent
+
+_INSURANCE_CSV = Path(r"C:\Users\dhawa\mva\Schema-Intelligence-Layer\test_data\insurance_variance_data_native.csv")
+_HR_CSV = Path(r"C:\Users\dhawa\mva\MVA-use-case-latest-one\tests\fixtures\hr_employee_payroll.csv")
+pytestmark_insurance = pytest.mark.skipif(not _INSURANCE_CSV.exists(), reason="Insurance dataset not found")
+pytestmark_hr = pytest.mark.skipif(not _HR_CSV.exists(), reason="HR fixture not found")
+
+
+def _all_possible_profile() -> CapabilityProfile:
+    caps = {name: CapabilityResult(StructuralResult(True, "ok"), ExecutionResult(True, confidence=0.9)) for name in ALL_CAPABILITIES}
+    return CapabilityProfile(capabilities=caps)
+
+
+def _none_possible_profile() -> CapabilityProfile:
+    caps = {name: CapabilityResult(StructuralResult(False, "nope"), None) for name in ALL_CAPABILITIES}
+    return CapabilityProfile(capabilities=caps)
+
+
+def test_target_column_present_plans_classification_or_regression_plus_feature_importance():
+    ctx = DatasetContext(
+        row_count=100, column_count=1,
+        columns=[ColumnContext(name="churned", semantic_role="metric")],
+        context_source="local_fallback",
+        feature_recommendation={"target_column": "churned", "problem_type": "classification"},
+    )
+    plan = AnalyticsPlanner().plan(ctx, _all_possible_profile(), [])
+    types = {p.analysis_type for p in plan}
+    assert "classification" in types
+    assert "feature_importance" in types
+    assert "regression" not in types
+
+
+def test_kpi_grounded_root_cause_always_proposed_when_kpi_exists():
+    ctx = DatasetContext(row_count=100, column_count=1, columns=[], context_source="local_fallback")
+    kpi = DiscoveredKPI(name="Profit Margin", formula="x", source_columns=["revenue", "cost"], semantic_basis="", category=FINANCIAL_MEASURE, kpi_type="ratio")
+    plan = AnalyticsPlanner().plan(ctx, _all_possible_profile(), [kpi])
+    root_cause = next((p for p in plan if p.analysis_type == "root_cause"), None)
+    assert root_cause is not None
+    assert root_cause.is_kpi_grounded is True
+    # Only the primary metric — never the rest of source_columns, which are
+    # KPI *inputs* (e.g. "cost" here), not a real driver decomposition.
+    # RootCauseAnalyzer falls through to correlation-based mode for this
+    # single-column case rather than treating "cost" as if it were a
+    # pre-labeled driver explaining 100% of the variance.
+    assert root_cause.target_columns == ["revenue"]
+
+
+def test_no_kpi_no_root_cause_proposed():
+    ctx = DatasetContext(row_count=100, column_count=1, columns=[], context_source="local_fallback")
+    plan = AnalyticsPlanner().plan(ctx, _all_possible_profile(), [])
+    assert not any(p.analysis_type == "root_cause" for p in plan)
+
+
+# ── Phase 4.6: question_intent.preferred_metrics/preferred_dimensions ──────
+
+def test_root_cause_prefers_question_named_metric_over_kpi_discovery_order():
+    """The bug found via live testing: a spuriously-discovered KPI winning
+    kpis[0] purely by rule order shouldn't decide root-cause's target when
+    the question itself names a real column."""
+    ctx = DatasetContext(row_count=100, column_count=1, columns=[], context_source="local_fallback")
+    kpi = DiscoveredKPI(name="Success Rate", formula="x", source_columns=["irrelevant_column"], semantic_basis="", category=FINANCIAL_MEASURE, kpi_type="rate")
+    intent = QuestionIntent(candidate_analysis_types={"root_cause"}, preferred_metrics=["net_profit_actual"])
+    plan = AnalyticsPlanner().plan(ctx, _all_possible_profile(), [kpi], question_intent=intent)
+    root_cause = next((p for p in plan if p.analysis_type == "root_cause"), None)
+    assert root_cause is not None
+    assert root_cause.target_columns == ["net_profit_actual"]
+    assert root_cause.is_kpi_grounded is False
+
+
+def test_root_cause_proposed_from_preferred_metric_with_zero_discovered_kpis():
+    """New capability: a question-named metric is enough on its own —
+    root_cause no longer strictly requires a discovered/curated KPI."""
+    ctx = DatasetContext(row_count=100, column_count=1, columns=[], context_source="local_fallback")
+    intent = QuestionIntent(candidate_analysis_types={"root_cause"}, preferred_metrics=["net_profit_actual"])
+    plan = AnalyticsPlanner().plan(ctx, _all_possible_profile(), [], question_intent=intent)
+    root_cause = next((p for p in plan if p.analysis_type == "root_cause"), None)
+    assert root_cause is not None
+    assert root_cause.target_columns == ["net_profit_actual"]
+
+
+def test_root_cause_falls_back_to_kpi_discovery_when_no_preferred_metric():
+    ctx = DatasetContext(row_count=100, column_count=1, columns=[], context_source="local_fallback")
+    kpi = DiscoveredKPI(name="Profit Margin", formula="x", source_columns=["revenue", "cost"], semantic_basis="", category=FINANCIAL_MEASURE, kpi_type="ratio")
+    intent = QuestionIntent(candidate_analysis_types={"root_cause"})  # no preferred_metrics
+    plan = AnalyticsPlanner().plan(ctx, _all_possible_profile(), [kpi], question_intent=intent)
+    root_cause = next((p for p in plan if p.analysis_type == "root_cause"), None)
+    assert root_cause.target_columns == ["revenue"]
+    assert root_cause.is_kpi_grounded is True
+
+
+def test_dimension_metric_prefers_question_named_metric_and_dimension():
+    ctx = DatasetContext(
+        row_count=100, column_count=3,
+        columns=[
+            ColumnContext(name="actual_exchange_rate", semantic_role="metric"),
+            ColumnContext(name="net_profit_actual", semantic_role="metric"),
+            ColumnContext(name="business_segment", semantic_role="dimension", cardinality_ratio=0.1),
+        ],
+        context_source="local_fallback",
+    )
+    intent = QuestionIntent(
+        candidate_analysis_types={"comparative_analysis"},
+        preferred_metrics=["net_profit_actual"], preferred_dimensions=["business_segment"],
+    )
+    plan = AnalyticsPlanner().plan(ctx, _all_possible_profile(), [], question_intent=intent)
+    comparative = next(p for p in plan if p.analysis_type == "comparative_analysis")
+    assert comparative.target_columns == ["net_profit_actual", "business_segment"]
+
+
+def test_dimension_metric_falls_back_when_preferred_column_not_structurally_valid():
+    """A preferred_metrics entry that isn't actually a metric-role column
+    in this dataset (or a preferred_dimensions entry that got cardinality-
+    filtered out) must fall back cleanly to the existing first-in-list
+    behavior, not error or silently drop the analysis."""
+    ctx = DatasetContext(
+        row_count=100, column_count=2,
+        columns=[
+            ColumnContext(name="actual_exchange_rate", semantic_role="metric"),
+            ColumnContext(name="business_segment", semantic_role="dimension", cardinality_ratio=0.1),
+        ],
+        context_source="local_fallback",
+    )
+    intent = QuestionIntent(
+        candidate_analysis_types={"comparative_analysis"}, preferred_metrics=["nonexistent_column"],
+    )
+    plan = AnalyticsPlanner().plan(ctx, _all_possible_profile(), [], question_intent=intent)
+    comparative = next(p for p in plan if p.analysis_type == "comparative_analysis")
+    assert comparative.target_columns == ["actual_exchange_rate", "business_segment"]
+
+
+def test_temporal_metric_plans_trend_forecast_correlation_anomaly_timeseries():
+    ctx = DatasetContext(
+        row_count=100, column_count=2,
+        columns=[
+            ColumnContext(name="date", semantic_role="temporal_dimension", is_temporal=True),
+            ColumnContext(name="revenue", semantic_role="metric"),
+        ],
+        context_source="local_fallback",
+    )
+    plan = AnalyticsPlanner().plan(ctx, _all_possible_profile(), [])
+    types = {p.analysis_type for p in plan}
+    assert {"trend", "forecast", "correlation", "anomaly_detection", "time_series_analysis"} <= types
+
+
+def test_structurally_impossible_analysis_never_planned():
+    """The Planner only checks structural.supported — when a capability's
+    resolver already said structurally impossible, it must never appear
+    in the plan, full stop (not even as a low-priority entry)."""
+    ctx = DatasetContext(
+        row_count=100, column_count=2,
+        columns=[
+            ColumnContext(name="date", semantic_role="temporal_dimension", is_temporal=True),
+            ColumnContext(name="revenue", semantic_role="metric"),
+        ],
+        context_source="local_fallback",
+    )
+    plan = AnalyticsPlanner().plan(ctx, _none_possible_profile(), [])
+    # forecast/time_series_analysis/anomaly_detection are capability-gated and blocked;
+    # trend/correlation are NOT gated (no entry in ANALYSIS_TYPE_TO_CAPABILITY... wait,
+    # correlation IS gated) -- only ungated types should survive
+    types = {p.analysis_type for p in plan}
+    assert "forecast" not in types
+    assert "time_series_analysis" not in types
+    assert "anomaly_detection" not in types
+    assert "correlation" not in types
+    assert "trend" in types  # trend has no capability gate
+
+
+def test_question_intent_narrows_the_final_plan():
+    ctx = DatasetContext(
+        row_count=100, column_count=2,
+        columns=[
+            ColumnContext(name="date", semantic_role="temporal_dimension", is_temporal=True),
+            ColumnContext(name="revenue", semantic_role="metric"),
+        ],
+        context_source="local_fallback",
+    )
+    profile = _all_possible_profile()
+    unrestricted = AnalyticsPlanner().plan(ctx, profile, [])
+    intent = QuestionIntent(candidate_analysis_types={"forecast", "trend"})
+    narrowed = AnalyticsPlanner().plan(ctx, profile, [], question_intent=intent)
+    assert {p.analysis_type for p in narrowed} == {"forecast", "trend"}
+    assert len(narrowed) < len(unrestricted)
+
+
+def test_plan_is_deduplicated_and_sorted_by_priority():
+    ctx = DatasetContext(
+        row_count=100, column_count=2,
+        columns=[
+            ColumnContext(name="date", semantic_role="temporal_dimension", is_temporal=True),
+            ColumnContext(name="revenue", semantic_role="metric"),
+        ],
+        context_source="local_fallback",
+    )
+    plan = AnalyticsPlanner().plan(ctx, _all_possible_profile(), [])
+    types = [p.analysis_type for p in plan]
+    assert len(types) == len(set(types))  # no duplicates
+    priorities = [p.priority for p in plan]
+    assert priorities == sorted(priorities)  # sorted ascending
+
+
+def test_hierarchy_detected_plans_comparative_and_ranking():
+    ctx = DatasetContext(
+        row_count=100, column_count=0, columns=[], context_source="agent2",
+        hierarchy=HierarchyInfo(status="accepted", template_key="geo", level_columns=["region", "country"]),
+    )
+    plan = AnalyticsPlanner().plan(ctx, _all_possible_profile(), [])
+    types = {p.analysis_type for p in plan}
+    assert "comparative_analysis" in types
+    assert "ranking" in types
+
+
+# ── Real, cross-domain end-to-end (Stages 0-4 chained) ───────────────────────
+
+@pytestmark_insurance
+def test_full_pipeline_report_mode_against_real_insurance_dataset():
+    df = pd.read_csv(_INSURANCE_CSV)
+    ctx = LocalSchemaInferer().infer(df)
+    profile = AnalyticsCapabilityResolver().resolve(ctx, 92.0, 95.0)
+    kpis = SemanticKPIDiscovery().discover(ctx)
+    plan = AnalyticsPlanner().plan(ctx, profile, kpis, question_intent=None)
+    assert len(plan) > 0
+    assert any(p.analysis_type == "root_cause" and p.is_kpi_grounded for p in plan)
+
+
+@pytestmark_insurance
+def test_full_pipeline_question_driven_narrows_correctly():
+    df = pd.read_csv(_INSURANCE_CSV)
+    ctx = LocalSchemaInferer().infer(df)
+    profile = AnalyticsCapabilityResolver().resolve(ctx, 92.0, 95.0)
+    kpis = SemanticKPIDiscovery().discover(ctx)
+    question_intent = BusinessQuestionInterpreter().interpret(
+        "Forecast underwriting result for next 6 months", profile, kpis,
+    )
+    plan = AnalyticsPlanner().plan(ctx, profile, kpis, question_intent=question_intent)
+    types = {p.analysis_type for p in plan}
+    assert types <= {"forecast", "trend", "time_series_analysis", "anomaly_detection"}
+    assert "clustering" not in types
+    assert "association_rules" not in types
+
+
+@pytestmark_hr
+def test_full_pipeline_generalizes_to_hr_dataset():
+    """The actual point of the whole chain: works on a domain it's never
+    seen, using only semantic vocabulary, zero HR-specific code."""
+    df = pd.read_csv(_HR_CSV)
+    ctx = LocalSchemaInferer().infer(df)
+    profile = AnalyticsCapabilityResolver().resolve(ctx, 90.0, 90.0)
+    kpis = SemanticKPIDiscovery().discover(ctx)
+    plan = AnalyticsPlanner().plan(ctx, profile, kpis, question_intent=None)
+    assert len(plan) > 0
+    types = {p.analysis_type for p in plan}
+    assert "trend" in types or "forecast" in types  # hire_date + salary
