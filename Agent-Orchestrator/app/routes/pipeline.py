@@ -10,7 +10,7 @@ import httpx
 
 from app.agents.orchestration_agent.graph import run_orchestrator_pipeline
 from app.agents.orchestration_agent.nodes.pipeline import (
-    _agent3_skip_reason, _analyze_via_agent3, _get_agent2_result, _readiness_and_features,
+    _agent3_skip_reason, _analyze_via_agent3, _dataset_context_fields, _get_agent2_result, _readiness_and_features,
 )
 
 router = APIRouter(prefix="/pipeline", tags=["Pipeline"])
@@ -137,7 +137,7 @@ async def ask_agent3(
     agent2_full_result = body
     primary_domain = agent2_full_result.get("primary_domain")
 
-    skip_reason = _agent3_skip_reason(filename, primary_domain, business_question)
+    skip_reason = _agent3_skip_reason(filename, business_question)
     if skip_reason:
         return {
             "agent3": {"status": "skipped", "reason": skip_reason},
@@ -145,8 +145,10 @@ async def ask_agent3(
         }
 
     ml_score, llm_score, feature_columns, ml_breakdown, llm_breakdown = _readiness_and_features(agent2_full_result)
+    column_profiles, hierarchy, charts, full_feature_recommendation = _dataset_context_fields(agent2_full_result)
     agent3_body = await _analyze_via_agent3(
         business_question, filename, content, content_type,
         ml_score, llm_score, feature_columns, ml_breakdown, llm_breakdown,
+        column_profiles, hierarchy, charts, full_feature_recommendation, primary_domain,
     )
     return {"agent3": agent3_body, "primary_domain_used": primary_domain}

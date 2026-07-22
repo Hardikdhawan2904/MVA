@@ -11,12 +11,47 @@ early `return`s inside one function body.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 import httpx
 
 from app.config import settings
 from app.agents.orchestration_agent.state import PipelineState
+
+# Agent 1's classification is open-vocabulary LLM output (its prompt only
+# *suggests* 14 domain names, e.g. "Human Resources" — see
+# Schema-Intelligence-Layer/app/prompts/llm_service_prompt.py); Agent 2's
+# domain config lookup is an exact, case-sensitive match against 5 fixed
+# strings (Finance/Payments/Customer/HR/Insurance, read from each
+# config/domains/*.yaml's own `domain:` field). Without this, a perfectly
+# correct classification like "Human Resources" fails Agent 2's check for
+# no reason other than wording. Maps known synonyms onto Agent 2's exact
+# strings; anything unrecognized passes through unchanged so Agent 2's own
+# UNSUPPORTED_DOMAIN error still fires for genuinely unsupported domains.
+_DOMAIN_SYNONYMS = {
+    "finance": "Finance",
+    "financial": "Finance",
+    "financial services": "Finance",
+    "insurance": "Insurance",
+    "payments": "Payments",
+    "payment": "Payments",
+    "payment processing": "Payments",
+    "customer": "Customer",
+    "crm": "Customer",
+    "customer relationship management": "Customer",
+    "e-commerce": "Customer",
+    "ecommerce": "Customer",
+    "hr": "HR",
+    "human resources": "HR",
+    "human resource": "HR",
+}
+
+
+def _canonicalize_domain(raw_domain: str) -> str:
+    """Normalize Agent 1's classification wording onto Agent 2's exact
+    supported-domain strings before it's used anywhere downstream."""
+    return _DOMAIN_SYNONYMS.get(raw_domain.strip().lower(), raw_domain)
 
 
 def _safe_json(resp: httpx.Response) -> dict[str, Any]:
@@ -36,17 +71,55 @@ def _strip_raw_rows(agent1_body: dict) -> dict:
     return agent1_body
 
 
-def _agent3_skip_reason(
-    filename: str, primary_domain: str | None, business_question: str | None,
-) -> str | None:
-    """None means Agent 3 should run; otherwise the string is why it won't."""
-    if primary_domain != "Insurance":
-        return f"Analytics Agent only supports the Insurance domain (this dataset classified as '{primary_domain}')."
-    if not business_question:
-        return "Analytics Agent answers one business question at a time — no business_question was supplied."
-    if not filename.lower().endswith(".csv"):
-        return "Analytics Agent only reads CSV datasets (DuckDB read_csv_auto) — this upload is not a .csv file."
-    return None
+@dataclass(frozen=True)
+class Agent3Capabilities:
+    """What Agent 3 can currently process — the one place this
+    Orchestrator's Agent-3-routing logic reads from (Phase 4.5, plan
+    "zany-giggling-crayon"). Hardcoded today, mirroring Agent 3's real
+    constraints (its SQLTool only reads CSV via DuckDB's read_csv_auto;
+    every analysis needs a business_question, even report mode's generic
+    one) — not a domain restriction. Agent 3 itself became domain-agnostic
+    in Phase 4 (a DomainPlugin per domain, GenericDomainPlugin as the
+    fallback for anything unregistered); before Phase 4.5, this file was
+    the *last* place still encoding "Agent 3 = Insurance-only" as a
+    routing rule rather than a capability check.
+
+    If Agent 3 later exposes this dynamically (e.g. its own
+    GET /capabilities, once it supports more than one file type or an
+    optional business_question), only this object's construction needs to
+    change — _agent3_skip_reason() and both its call sites don't."""
+
+    supported_file_extensions: frozenset[str] = field(default_factory=lambda: frozenset({".csv"}))
+    requires_business_question: bool = True
+
+    def unsupported_file_reason(self, filename: str) -> str | None:
+        if not any(filename.lower().endswith(ext) for ext in self.supported_file_extensions):
+            return (
+                f"Analytics Agent only reads {'/'.join(sorted(self.supported_file_extensions))} "
+                f"datasets (DuckDB read_csv_auto) — this upload isn't one."
+            )
+        return None
+
+    def missing_question_reason(self, business_question: str | None) -> str | None:
+        if self.requires_business_question and not business_question:
+            return "Analytics Agent answers one business question at a time — no business_question was supplied."
+        return None
+
+
+AGENT3_CAPABILITIES = Agent3Capabilities()
+
+
+def _agent3_skip_reason(filename: str, business_question: str | None) -> str | None:
+    """None means Agent 3 should run; otherwise the string is why it won't.
+
+    Deliberately domain-agnostic since Phase 4.5 — Agent 3 resolves its
+    own DomainPlugin (or GenericDomainPlugin) from whatever
+    `detected_domain` this request forwards; the Orchestrator no longer
+    needs an opinion about which domains Agent 3 "supports"."""
+    return (
+        AGENT3_CAPABILITIES.missing_question_reason(business_question)
+        or AGENT3_CAPABILITIES.unsupported_file_reason(filename)
+    )
 
 
 async def _get_agent2_result(run_id: str) -> tuple[int, dict[str, Any]]:
@@ -73,12 +146,24 @@ async def _analyze_via_agent3(
     feature_columns: list,
     ml_breakdown: dict | None = None,
     llm_breakdown: dict | None = None,
+    column_profiles: list | None = None,
+    hierarchy: dict | None = None,
+    charts: list | None = None,
+    full_feature_recommendation: dict | None = None,
+    detected_domain: str | None = None,
 ) -> dict[str, Any]:
     """The actual call to Agent 3's POST /analyze. Shared by the full
     pipeline's call_agent3 node and the /pipeline/ask route — same request
     shape either way, they just differ in where ml_score/llm_score/
-    feature_columns/breakdowns come from (a run just completed vs.
-    re-fetched from Agent 2's persisted result by run_id)."""
+    feature_columns/breakdowns/dataset-context fields come from (a run just
+    completed vs. re-fetched from Agent 2's persisted result by run_id).
+
+    column_profiles/hierarchy/charts/full_feature_recommendation/
+    detected_domain (Agent 3 redesign, Phase 0 — plan "zany-giggling-
+    crayon", Decision A1): Agent 2's per-column semantic classification,
+    forwarded so Agent 3 can build a rich DatasetContext instead of falling
+    back to its own lightweight local inference. All optional/additive —
+    Agent 3 degrades gracefully if any are omitted."""
     url = f"{settings.ANALYTICS_AGENT_BASE_URL}/analyze"
     data = {"business_question": business_question}
     if ml_score is not None:
@@ -91,6 +176,16 @@ async def _analyze_via_agent3(
         data["ml_readiness_breakdown"] = json.dumps(ml_breakdown)
     if llm_breakdown:
         data["llm_readiness_breakdown"] = json.dumps(llm_breakdown)
+    if column_profiles:
+        data["column_profiles"] = json.dumps(column_profiles)
+    if hierarchy:
+        data["hierarchy"] = json.dumps(hierarchy)
+    if charts:
+        data["charts"] = json.dumps(charts)
+    if full_feature_recommendation:
+        data["full_feature_recommendation"] = json.dumps(full_feature_recommendation)
+    if detected_domain:
+        data["detected_domain"] = detected_domain
 
     try:
         async with httpx.AsyncClient() as client:
@@ -134,6 +229,24 @@ def _readiness_and_features(
     llm_score = llm_assessment.get("score") if llm_assessment else None
     feature_columns = (agent2_full_result or {}).get("feature_recommendation", {}).get("feature_columns") or []
     return ml_score, llm_score, feature_columns, ml_assessment, llm_assessment
+
+
+def _dataset_context_fields(
+    agent2_full_result: dict,
+) -> tuple[list | None, dict | None, list | None, dict | None]:
+    """Extract (column_profiles, hierarchy, charts, full_feature_recommendation)
+    from Agent 2's full result — the per-column semantic classification a
+    domain-agnostic Agent 3 needs (Decision A1, plan "zany-giggling-crayon").
+    Distinct from _readiness_and_features() above: that extracts the
+    readiness-gating scores/breakdowns, this extracts the dataset-shape
+    understanding those gates don't carry. Shared by call_agent3 and
+    /pipeline/ask, same extraction either way."""
+    result = agent2_full_result or {}
+    column_profiles = result.get("column_profiles") or None
+    hierarchy = result.get("hierarchy") or None
+    charts = result.get("charts") or None
+    full_feature_recommendation = result.get("feature_recommendation") or None
+    return column_profiles, hierarchy, charts, full_feature_recommendation
 
 
 class OrchestratorGraphNodes:
@@ -200,6 +313,8 @@ class OrchestratorGraphNodes:
                     "agent1": agent1_body,
                 },
             }
+
+        primary_domain = _canonicalize_domain(primary_domain)
 
         column_descriptions = agent1_body.get("column_descriptions") or {}
         schema_metadata = {
@@ -308,28 +423,37 @@ class OrchestratorGraphNodes:
     # ── Node 5: Agent 3 (Analytics Agent) ────────────────────────────────────
     # Vendored at mva/Analytics-Agent (originally github.com/VirenKhapra/
     # Analytics-agent-for-project-3), now a FastAPI service (port 8003) like
-    # Agent 1/2, called the same way as call_agent2 above. Answers one
-    # business question at a time over the Insurance dataset via DuckDB +
-    # ML/LLM tools. Optional and best-effort: skips cleanly outside its scope
-    # (non-Insurance domain, no business_question, non-CSV upload) and never
-    # populates error_content/error_status_code on its own failures — Agent 1
-    # and Agent 2 already succeeded by the time this node runs, so a broken
-    # or unreachable Agent 3 shouldn't fail an otherwise-successful pipeline.
+    # Agent 1/2, called the same way as call_agent2 above. A domain-agnostic
+    # analytics engine since Phase 4 of its own redesign — Insurance is its
+    # fully-built reference domain (curated KPIs, pre-computed variance
+    # drivers), everything else gets a real generic report via
+    # GenericDomainPlugin, not a skip. detected_domain (this request's
+    # canonicalized primary_domain) is forwarded so Agent 3 can resolve the
+    # right DomainPlugin itself — the Orchestrator doesn't need an opinion
+    # about which domains it "supports" (Phase 4.5). Optional and best-
+    # effort regardless of domain: skips cleanly outside Agent 3's actual
+    # capabilities (no business_question, non-CSV upload — see
+    # Agent3Capabilities above) and never populates error_content/
+    # error_status_code on its own failures — Agent 1 and Agent 2 already
+    # succeeded by the time this node runs, so a broken or unreachable
+    # Agent 3 shouldn't fail an otherwise-successful pipeline.
 
     async def call_agent3(self, state: PipelineState) -> dict[str, Any]:
         business_question = state.get("business_question")
-        skip_reason = _agent3_skip_reason(
-            state["filename"], state.get("primary_domain"), business_question,
-        )
+        skip_reason = _agent3_skip_reason(state["filename"], business_question)
         if skip_reason:
             return {"agent3_body": {"status": "skipped", "reason": skip_reason}}
 
         ml_score, llm_score, feature_columns, ml_breakdown, llm_breakdown = _readiness_and_features(
             state.get("agent2_full_result"),
         )
+        column_profiles, hierarchy, charts, full_feature_recommendation = _dataset_context_fields(
+            state.get("agent2_full_result"),
+        )
         agent3_body = await _analyze_via_agent3(
             business_question, state["filename"], state["content"], state["content_type"],
             ml_score, llm_score, feature_columns, ml_breakdown, llm_breakdown,
+            column_profiles, hierarchy, charts, full_feature_recommendation, state.get("primary_domain"),
         )
         return {"agent3_body": agent3_body}
 
