@@ -152,7 +152,7 @@ def test_root_cause_labeled_mode_computes_unexplained_variance_from_extra_contex
     })
     selected = SelectedModel(
         algorithm="Deterministic Driver Decomposition",
-        implementation_class="app.services.root_cause_tool.RootCauseTool",
+        implementation_class="app.services.tools.root_cause_tool.RootCauseTool",
         requires_ml=False, cost_tier="cheap", reasons=["test"],
     )
     scheduled = ScheduledAnalysis(
@@ -177,7 +177,7 @@ def test_root_cause_labeled_mode_without_total_variance_leaves_unexplained_none(
     })
     selected = SelectedModel(
         algorithm="Deterministic Driver Decomposition",
-        implementation_class="app.services.root_cause_tool.RootCauseTool",
+        implementation_class="app.services.tools.root_cause_tool.RootCauseTool",
         requires_ml=False, cost_tier="cheap", reasons=["test"],
     )
     scheduled = ScheduledAnalysis(

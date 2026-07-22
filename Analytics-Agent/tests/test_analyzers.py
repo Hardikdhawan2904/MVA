@@ -173,7 +173,7 @@ def test_execute_wraps_run_exceptions_instead_of_raising():
     def _boom():
         raise ValueError("synthetic failure")
     analyzer = _StubAnalyzer(_boom)
-    selected = SelectedModel(algorithm="X", implementation_class="app.services.analytics_tool.AnalyticsTool", requires_ml=False, cost_tier="cheap", reasons=[])
+    selected = SelectedModel(algorithm="X", implementation_class="app.services.tools.analytics_tool.AnalyticsTool", requires_ml=False, cost_tier="cheap", reasons=[])
     result = analyzer.execute(pd.DataFrame(), _fixture_context(_fixture_df()), _scheduled("stub", []), selected)
     assert result.evidence == {}
     assert any("synthetic failure" in r for r in result.reasons)

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from app.services.analytics_tool import AnalyticsTool
+from app.services.tools.analytics_tool import AnalyticsTool
 
 
 def _aggregation_method(kpi: dict) -> str:

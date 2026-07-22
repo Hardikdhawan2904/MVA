@@ -17,7 +17,7 @@ from app.services.ml.persistence import load_pickle
 from app.services.ml.anomaly_detector import AnomalyDetector, RATIO_FEATURE_COLUMNS
 from app.services.ml.classifier import RiskSegmenter, VarianceClassifier, SEGMENT_FEATURE_COLS, VARIANCE_FEATURE_COLS
 from app.services.ml.forecaster import LightGBMForecaster
-from app.services.rule_engine import _safe_eval
+from app.services.tools.rule_engine import _safe_eval
 
 _DATASET = Path(r"C:\Users\dhawa\mva\Schema-Intelligence-Layer\test_data\insurance_variance_data_native.csv")
 

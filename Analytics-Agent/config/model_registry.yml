@@ -409,7 +409,7 @@ algorithms:
     outputs: [trend_direction, trend_slope]
     cost_tier: cheap
     supported_dataset_types: []
-    implementation_class: app.services.analytics_tool.AnalyticsTool
+    implementation_class: app.services.tools.analytics_tool.AnalyticsTool
     enabled: true
 
   - algorithm: Descriptive Distribution
@@ -429,7 +429,7 @@ algorithms:
     outputs: [ranked_records]
     cost_tier: cheap
     supported_dataset_types: []
-    implementation_class: app.services.analytics_tool.AnalyticsTool
+    implementation_class: app.services.tools.analytics_tool.AnalyticsTool
     enabled: true
 
   - algorithm: Comparative Groupby
@@ -439,7 +439,7 @@ algorithms:
     outputs: [group_comparison]
     cost_tier: cheap
     supported_dataset_types: []
-    implementation_class: app.services.analytics_tool.AnalyticsTool
+    implementation_class: app.services.tools.analytics_tool.AnalyticsTool
     enabled: true
 
   - algorithm: Deterministic Driver Decomposition
@@ -449,7 +449,7 @@ algorithms:
     outputs: [driver_breakdown, primary_driver, explained_variance]
     cost_tier: cheap
     supported_dataset_types: []
-    implementation_class: app.services.root_cause_tool.RootCauseTool
+    implementation_class: app.services.tools.root_cause_tool.RootCauseTool
     enabled: true
 
   - algorithm: Time Series Descriptive

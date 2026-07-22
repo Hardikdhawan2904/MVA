@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from app.services.explanation_tool import ExplanationTool
+from app.services.tools.explanation_tool import ExplanationTool
 
 
 # ── _compute_confidence ───────────────────────────────────────────────────────

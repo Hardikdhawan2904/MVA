@@ -21,8 +21,8 @@ from app.services.domain_plugins.insurance.plugin import InsurancePlugin
 from app.services.domain_plugins.registry import PluginRegistry
 from app.services.planning.models import PlannedAnalysis
 from app.services.question_interpreter.models import QuestionIntent
-from app.services.root_cause_tool import DEFAULT_DRIVER_LABELS, DEFAULT_VARIANCE_DRIVER_COLUMNS, RootCauseTool
-from app.services.rule_engine import RuleEngine
+from app.services.tools.root_cause_tool import DEFAULT_DRIVER_LABELS, DEFAULT_VARIANCE_DRIVER_COLUMNS, RootCauseTool
+from app.services.tools.rule_engine import RuleEngine
 
 _INSURANCE_PLUGIN_DIR = Path(__file__).parent.parent / "app/services/domain_plugins/insurance"
 _ORIGINAL_KPI_DEFINITIONS = Path(__file__).parent.parent / "config/rules/kpi_definitions.json"
@@ -122,12 +122,6 @@ def test_analytics_graph_nodes_resolves_expected_plugin_per_domain(domain, expec
         dataset_path=str(csv_path), conversation_id="test-plugin-resolution", detected_domain=domain,
     )
     assert isinstance(nodes._domain_plugin, expected_plugin_type)
-    nodes = AnalyticsGraphNodes(
-        dataset_path=str(_ORIGINAL_KPI_DEFINITIONS.parent.parent.parent / "test_data" / "insurance_variance_data_native.csv")
-        if False else str(Path(__file__).parent / "fixtures" / "__nonexistent__.csv"),
-        conversation_id="test-plugin-resolution",
-        detected_domain=domain,
-    ) if False else None  # placeholder replaced below
 
 
 # ── InsurancePlugin content matches today's exact hardcoded values ─────────

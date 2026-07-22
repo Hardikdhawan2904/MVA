@@ -36,7 +36,7 @@ from app.config import (
     LGBM_CFG, ISO_FOREST_CFG, XGBOOST_CFG, KMEANS_CFG,
     MODEL_REGISTRY_PATH,
 )
-from app.services.sql_tool import SQLTool
+from app.services.tools.sql_tool import SQLTool
 
 logging.basicConfig(level=getattr(logging, LOG_LEVEL), format=LOG_FORMAT)
 logger = logging.getLogger("ModelTrainer")

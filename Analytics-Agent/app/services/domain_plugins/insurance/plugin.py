@@ -28,7 +28,7 @@ from typing import Any
 from app.services.domain_plugins.base import DomainPlugin
 from app.services.planning.models import PlannedAnalysis
 from app.services.question_interpreter.models import QuestionIntent
-from app.services.root_cause_tool import DEFAULT_DRIVER_LABELS, DEFAULT_VARIANCE_DRIVER_COLUMNS
+from app.services.tools.root_cause_tool import DEFAULT_DRIVER_LABELS, DEFAULT_VARIANCE_DRIVER_COLUMNS
 
 _PLUGIN_DIR = Path(__file__).parent
 
