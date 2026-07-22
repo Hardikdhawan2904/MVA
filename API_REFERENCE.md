@@ -1,8 +1,8 @@
 # MVA Pipeline — API Reference
 
-Four services — two data-intake agents, an orchestrator, and one optional Insurance Q&A agent — each a separate FastAPI process with its own Swagger UI, sharing one venv and one dependency list. This doc lists every real endpoint, what it's for, and how to open each service's interactive docs locally.
+Four services — two data-intake agents, an orchestrator, and one optional analytics Q&A agent — each a separate FastAPI process with its own Swagger UI, sharing one venv and one dependency list. This doc lists every real endpoint, what it's for, and how to open each service's interactive docs locally.
 
-**Flow:** Upload → Agent 1 *(classify + quality-gate)* → Orchestrator *(relay)* → Agent 2 *(profile + score)* → Agent 3 *(optional, Insurance Q&A)* → Combined result
+**Flow:** Upload → Agent 1 *(classify + quality-gate)* → Orchestrator *(relay)* → Agent 2 *(profile + score)* → Agent 3 *(optional Q&A, any of the 5 supported domains)* → Combined result
 
 ---
 
@@ -18,7 +18,7 @@ Four services — two data-intake agents, an orchestrator, and one optional Insu
 **Agent 1** validates uploads, runs the 10-check quality gate, and classifies business domain via LLM.
 **Agent 2** does deep column profiling, quality scoring, hierarchy detection, chart + rule generation.
 **Orchestrator** runs a file through Agent 1 then Agent 2 (then optionally Agent 3) in one call, no manual domain entry needed.
-**Agent 3** is a domain-agnostic analytics engine (Insurance is its fully-built reference domain); the Orchestrator's pipeline routes only Insurance datasets to it today, but a direct call works against any uploaded dataset.
+**Agent 3** is a domain-agnostic analytics engine (Insurance is its fully-built reference domain); the Orchestrator's pipeline routes any of Agent 2's 5 supported domains to it, gated only on file type (`.csv`) and a supplied `business_question`.
 
 ---
 
@@ -85,7 +85,7 @@ Takes a raw file plus the primary domain Agent 1 already determined, and produce
 
 Base URL: `http://127.0.0.1:8002`
 
-The one call to make if you just want a file profiled end to end. Sends the upload to Agent 1, takes whatever domain it decides on, and forwards straight into Agent 2 — no domain has to be picked by hand. If a `business_question` was supplied and the domain is Insurance, also forwards to Agent 3. Stops cleanly with a clear error at whichever stage fails.
+The one call to make if you just want a file profiled end to end. Sends the upload to Agent 1, takes whatever domain it decides on, and forwards straight into Agent 2 — no domain has to be picked by hand. If a `business_question` was supplied and the upload is a `.csv`, also forwards to Agent 3, for any of Agent 2's 5 supported domains. Stops cleanly with a clear error at whichever stage fails.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -97,9 +97,9 @@ The one call to make if you just want a file profiled end to end. Sends the uplo
 
 ### Agent 3 — Analytics Agent (optional third stage)
 
-Vendored into this repo at `Analytics-Agent/` (originally a colleague's separate project, github.com/VirenKhapra/Analytics-agent-for-project-3) — a FastAPI service like Agent 1/2, called by the orchestrator over `httpx` the same way it calls Agent 2. It installs from the same root `requirements.txt` and runs under the same shared venv as the other three folders. Internally it's a domain-agnostic, dataset-driven analytics engine (see `Analytics-Agent/README.md`) with Insurance as its fully-built reference domain (curated KPI lookup, variance, root-cause, forecast, anomaly detection, segmentation); a dataset with no matching domain plugin still gets a real generic multi-analysis report instead of a skip, though the Orchestrator's own gate below only ever routes Insurance datasets to it today.
+Vendored into this repo at `Analytics-Agent/` (originally a colleague's separate project, github.com/VirenKhapra/Analytics-agent-for-project-3) — a FastAPI service like Agent 1/2, called by the orchestrator over `httpx` the same way it calls Agent 2. It installs from the same root `requirements.txt` and runs under the same shared venv as the other three folders. Internally it's a domain-agnostic, dataset-driven analytics engine (see `Analytics-Agent/README.md`) with Insurance as its fully-built reference domain (curated KPI lookup, variance, root-cause, forecast, anomaly detection, segmentation); a dataset with no matching domain plugin still gets a real generic multi-analysis report instead of a skip, and the Orchestrator's gate below routes any of Agent 2's 5 supported domains to it, not just Insurance.
 
-Runs only when **all** of: `primary_domain == "Insurance"`, the upload is a `.csv`, and `business_question` was supplied. Fed Agent 2's `ml_readiness`/`llm_readiness` scores **and** their full breakdown (`agent2.readiness_assessments[]` — strengths/blocking_issues/evidence, not just the bare score) as Form fields, so Agent 3's `execution_trace` can explain *why* a readiness gate passed or failed, not just report a number. Response shapes:
+Runs whenever **both** of: the upload is a `.csv`, and `business_question` was supplied — for any of Agent 2's 5 supported domains (`Finance`, `Payments`, `Customer`, `HR`, `Insurance`). Fed Agent 2's `ml_readiness`/`llm_readiness` scores **and** their full breakdown (`agent2.readiness_assessments[]` — strengths/blocking_issues/evidence, not just the bare score) as Form fields, so Agent 3's `execution_trace` can explain *why* a readiness gate passed or failed, not just report a number. Response shapes:
 
 ```jsonc
 // Ran successfully:

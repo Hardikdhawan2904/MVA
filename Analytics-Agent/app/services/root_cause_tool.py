@@ -58,12 +58,6 @@ DEFAULT_DRIVER_LABELS = {
     "one_off_variance_amount":         "One-Off / Exceptional",
 }
 
-# Backward-compatible aliases — some callers/tests may still import the old
-# module-level names directly.
-VARIANCE_DRIVER_COLUMNS = DEFAULT_VARIANCE_DRIVER_COLUMNS
-DRIVER_LABELS = DEFAULT_DRIVER_LABELS
-
-
 class RootCauseTool:
     """
     Decomposes variance into its constituent drivers and ranks them
@@ -94,7 +88,10 @@ class RootCauseTool:
         Main root cause analysis entry point.
 
         Args:
-            df             : DataFrame from SQLTool.get_variance_drivers()
+            df             : The request's shared dataset DataFrame (fetched
+                             once via SQLTool.get_kpi_data(["*"], ...) in
+                             execute_analyses) — only self.driver_columns
+                             are read from it, everything else is ignored.
             total_variance : If provided, validates driver sum against total.
 
         Returns:

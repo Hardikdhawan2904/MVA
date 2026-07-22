@@ -30,7 +30,10 @@ class Settings(BaseSettings):
 
     # Agent 3 (Analytics Agent) — now a normal FastAPI service (port 8003),
     # same shape as Agent 1/2, called over httpx like the others. Optional
-    # stage: only runs for Insurance-domain CSVs with a business_question.
+    # stage: runs for any of Agent 2's 5 supported domains (Finance,
+    # Payments, Customer, HR, Insurance), gated only on file type (.csv)
+    # and a supplied business_question — see Agent3Capabilities in
+    # app/agents/orchestration_agent/nodes/pipeline.py.
     ANALYTICS_AGENT_BASE_URL: str = "http://127.0.0.1:8003"
     ANALYTICS_AGENT_TIMEOUT_SECONDS: float = 120.0
 

@@ -149,12 +149,6 @@ class InsurancePlugin(DomainPlugin):
     def get_view_name(self) -> str:
         return "insurance"
 
-    def get_variance_columns(self) -> list[str] | None:
-        return None  # SQLTool's own default already IS this exact list
-
-    def get_ratio_columns(self) -> list[str] | None:
-        return None  # SQLTool's own default already IS this exact list
-
     def get_default_kpi_name(self) -> str | None:
         # The named home for what used to be nodes/pipeline.py's hardcoded
         # `kpi_name = self._detect_kpi(query_lower) or self.memory.get_last_kpi()

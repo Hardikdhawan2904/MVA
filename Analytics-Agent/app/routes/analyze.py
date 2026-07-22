@@ -21,7 +21,7 @@ router = APIRouter(tags=["Analytics"])
 
 @router.post("/analyze", response_model=AnalysisResponse)
 async def analyze(
-    file: UploadFile = File(..., description="Insurance CSV dataset to answer the question against"),
+    file: UploadFile = File(..., description="CSV dataset to answer the question against"),
     business_question: str = Form(..., description="The business question to answer"),
     conversation_id: str | None = Form(
         default=None,
@@ -81,7 +81,8 @@ async def analyze(
     detected_domain: str | None = Form(
         default=None,
         description="Optional — Agent 1's business_domain classification for this upload, as forwarded "
-                    "by the Orchestrator. Inert this phase.",
+                    "by the Orchestrator. Resolves which DomainPlugin applies (PluginRegistry.find_plugin) "
+                    "-- falls back to GenericDomainPlugin when omitted or unmatched.",
     ),
 ) -> AnalysisResponse:
     def _parse_json_field(raw: str | None, field_name: str) -> Any | None:

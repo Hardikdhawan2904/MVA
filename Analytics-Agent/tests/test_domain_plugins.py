@@ -23,7 +23,6 @@ from app.services.planning.models import PlannedAnalysis
 from app.services.question_interpreter.models import QuestionIntent
 from app.services.root_cause_tool import DEFAULT_DRIVER_LABELS, DEFAULT_VARIANCE_DRIVER_COLUMNS, RootCauseTool
 from app.services.rule_engine import RuleEngine
-from app.services.sql_tool import DEFAULT_RATIO_COLUMNS, DEFAULT_VARIANCE_DRIVER_COLUMNS as SQL_DEFAULT_VARIANCE_COLUMNS
 
 _INSURANCE_PLUGIN_DIR = Path(__file__).parent.parent / "app/services/domain_plugins/insurance"
 _ORIGINAL_KPI_DEFINITIONS = Path(__file__).parent.parent / "config/rules/kpi_definitions.json"
@@ -198,16 +197,8 @@ def test_root_cause_tool_via_plugin_matches_default_construction():
     assert result_default["primary_driver"] == result_plugin["primary_driver"]
 
 
-def test_sql_tool_defaults_still_match_insurance_plugin_intent():
-    """The plugin's get_variance_columns()/get_ratio_columns() return None
-    (meaning "use SQLTool's own default") — confirm those defaults are
-    still exactly Insurance's original hardcoded lists."""
-    plugin = InsurancePlugin()
-    assert plugin.get_variance_columns() is None
-    assert plugin.get_ratio_columns() is None
-    assert plugin.get_view_name() == "insurance"
-    assert len(SQL_DEFAULT_VARIANCE_COLUMNS) == 23
-    assert len(DEFAULT_RATIO_COLUMNS) == 22
+def test_insurance_plugin_view_name():
+    assert InsurancePlugin().get_view_name() == "insurance"
 
 
 # ── Phase 4: get_default_kpi_name() / enhance_plan() ────────────────────────

@@ -1,6 +1,6 @@
 # Agent Orchestrator
 
-Coordinates the multi-agent data pipeline: uploads a dataset once, sends it through **Agent 1 (Schema Intelligence Layer)** for classification and quality gating, then feeds Agent 1's output into **Agent 2 (MVA Data Profiling Engine)** for deep profiling — and, when the upload is Insurance data with a business question attached, forwards it on to **Agent 3 (Analytics Agent)** to answer that question. Returns all results together in a single response.
+Coordinates the multi-agent data pipeline: uploads a dataset once, sends it through **Agent 1 (Schema Intelligence Layer)** for classification and quality gating, then feeds Agent 1's output into **Agent 2 (MVA Data Profiling Engine)** for deep profiling — and, when the upload is a CSV with a business question attached, forwards it on to **Agent 3 (Analytics Agent)** to answer that question, for any of Agent 2's 5 supported domains. Returns all results together in a single response.
 
 Expressed as a LangGraph `StateGraph` (`app/agents/orchestration_agent/`) rather than a chain of early returns — mostly sequential HTTP calls with conditional stop-on-error edges (no LLM calls or tools of its own), plus one best-effort optional stage for Agent 3. Each future agent added to the pipeline becomes another node in the same graph.
 
@@ -8,7 +8,7 @@ Expressed as a LangGraph `StateGraph` (`app/agents/orchestration_agent/`) rather
 
 ```
 Upload → Agent 1 (classify + quality gate) → Agent 2 (profile, using Agent 1's classification)
-       → Agent 3 (optional — Insurance domain + business_question + CSV only)
+       → Agent 3 (optional — any of Agent 2's 5 supported domains, + business_question + CSV only)
        → combined response
 ```
 
@@ -41,7 +41,7 @@ Agent 3 is best-effort and never fails an otherwise-successful pipeline: outside
 
 ### Agent 3 (Analytics Agent)
 
-Runs only when **all** of: `primary_domain == "Insurance"`, the upload is a `.csv`, and `business_question` was supplied. Called over `httpx` — the same shape as the call to Agent 2 — posting the file straight through along with Agent 2's `ml_readiness`/`llm_readiness` scores, their full readiness breakdown (`agent2.readiness_assessments[]` — strengths/blocking_issues/evidence, not just the score, extracted by `_readiness_and_features()` in `app/agents/orchestration_agent/nodes/pipeline.py`), and (if present) its `feature_recommendation.feature_columns`. Agent 3's response — including its `execution_trace`/`execution_summary` — is forwarded back through `agent3_body` untouched. See the [root API reference](../API_REFERENCE.md#agent-3--analytics-agent-optional-third-stage) for the full response shapes, and [`Analytics-Agent/README.md`](../Analytics-Agent/README.md) for what it does internally.
+Runs whenever **both** of: the upload is a `.csv`, and `business_question` was supplied — for any of Agent 2's 5 supported domains (`Finance`, `Payments`, `Customer`, `HR`, `Insurance`), gated on file type and question only, never domain. Called over `httpx` — the same shape as the call to Agent 2 — posting the file straight through along with Agent 2's `ml_readiness`/`llm_readiness` scores, their full readiness breakdown (`agent2.readiness_assessments[]` — strengths/blocking_issues/evidence, not just the score, extracted by `_readiness_and_features()` in `app/agents/orchestration_agent/nodes/pipeline.py`), and (if present) its `feature_recommendation.feature_columns`. Agent 3's response — including its `execution_trace`/`execution_summary` — is forwarded back through `agent3_body` untouched. See the [root API reference](../API_REFERENCE.md#agent-3--analytics-agent-optional-third-stage) for the full response shapes, and [`Analytics-Agent/README.md`](../Analytics-Agent/README.md) for what it does internally.
 
 ### Re-asking Agent 3 without re-running the whole pipeline
 
@@ -74,7 +74,7 @@ cp .env.example .env
 ..\venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8002
 ```
 
-Agent 1, Agent 2, and (if you want the Insurance Q&A stage) Agent 3 must already be running (see their own READMEs) — the orchestrator only coordinates between them, it has no database or LLM of its own.
+Agent 1, Agent 2, and (if you want the analytics Q&A stage) Agent 3 must already be running (see their own READMEs) — the orchestrator only coordinates between them, it has no database or LLM of its own.
 
 ## Environment Variables
 
@@ -108,7 +108,8 @@ curl -X POST http://localhost:8002/pipeline/run \
 No `primary_domain` field — it's derived automatically from Agent 1's classification.
 
 ```bash
-# Insurance dataset with a business question — also invokes Agent 3
+# A dataset with a business question — also invokes Agent 3 (works for
+# any of Agent 2's 5 supported domains, Insurance shown here as one example)
 curl -X POST http://localhost:8002/pipeline/run \
   -F "file=@insurance_variance_data_native.csv" \
   -F "business_question=Show Gross Written Premium for FY2025"

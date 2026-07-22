@@ -100,16 +100,6 @@ class DomainPlugin(ABC):
         plugin can use any name."""
         return "insurance"
 
-    def get_variance_columns(self) -> list[str] | None:
-        """SQLTool.get_variance_drivers()'s column list. None means use
-        SQLTool's own default (today's exact Insurance list)."""
-        return None
-
-    def get_ratio_columns(self) -> list[str] | None:
-        """SQLTool.get_ratio_data()'s column list. None means use
-        SQLTool's own default (today's exact Insurance list)."""
-        return None
-
     # ── Phase 4 addition ─────────────────────────────────────────────────
 
     def get_default_kpi_name(self) -> str | None:
