@@ -1,32 +1,72 @@
 # Analytics Agent (Agent 3)
 
-Answers one Insurance business question at a time — KPI lookup, variance vs. budget/prior year, root-cause decomposition, trend, forecast, anomaly detection, and portfolio risk segmentation — against an uploaded dataset, using a rule engine, DuckDB, ML models, and Groq for narration.
+A domain-agnostic, dataset-driven analytics engine — resolves what's analytically possible on an uploaded dataset, discovers KPIs, plans and schedules analyses within a budget, selects an ML or deterministic algorithm per analysis, executes it, and narrates the evidence in business language (Groq, or a deterministic template formatter if Groq is unavailable/rate-limited or `llm_readiness` is below threshold).
 
-Originally a separate project by a colleague (github.com/VirenKhapra/Analytics-agent-for-project-3), vendored into this monorepo and rebuilt as a FastAPI + LangGraph service to match Agent 1/2/3's shared architecture — see [Decisions Log](#decisions-log) below for how it got here.
+Insurance is the **reference domain** — a fully-built `DomainPlugin` (`app/services/domain_plugins/insurance/`) with a curated KPI catalog (Gross Written Premium, Loss Ratio, Combined Ratio, Underwriting Result, ...), 14 pre-computed variance drivers, and 18 business rules, all preserved byte-identical through the redesign below. A dataset with no matching plugin runs through the exact same pipeline with an empty KPI catalog (`GenericDomainPlugin`) instead of inheriting any of Insurance's assumptions — confirmed working end-to-end against non-Insurance fixtures (HR payroll, finance, payments).
+
+Originally a separate project by a colleague (github.com/VirenKhapra/Analytics-agent-for-project-3), vendored into this monorepo, rebuilt as a FastAPI + LangGraph service, and then redesigned from an Insurance-only intent-dispatch agent into the generic engine described here — see [Decisions Log](#decisions-log) below for the full history.
 
 ## Architecture
 
 ```
-POST /analyze (file + business_question + conversation_id + ml_readiness + llm_readiness)
-  → detect_intent_and_filters (regex intent/KPI/filter detection, memory carryover)
-  → route by intent
-      → handle_show_kpi / handle_variance / handle_root_cause / handle_trend
-      → handle_forecast / handle_anomaly / handle_segment
-        (ml_readiness < threshold → deterministic fallback instead of the ML model)
-  → narrate (Groq, or a deterministic template formatter if llm_readiness < threshold
-             or Groq is unavailable/rate-limited)
-  → record_memory (sliding-window conversation history, persisted to Postgres
-                    by conversation_id — see Conversation Memory below)
+POST /analyze (file + business_question + conversation_id + ml_readiness + llm_readiness
+               + optional Agent 2 fields: column_profiles, hierarchy, charts,
+               feature_recommendation, full_feature_recommendation, detected_domain)
+
+  Stage 0  build_dataset_context     — DatasetContext from Agent 2's column_profiles/
+                                        hierarchy/charts (or LocalSchemaInferer, if none
+                                        of that was forwarded)
+  Stage 1  resolve_capabilities      — per capability: structural support (can this run
+                                        at all, given the dataset's shape?) split from
+                                        execution support (does Agent 2's ml_readiness_score
+                                        clear this agent's own threshold?) — never
+                                        recomputes ml_readiness/llm_readiness, consumes
+                                        Agent 2's scores verbatim
+  Stage 2  discover_kpis             — named business KPIs synthesized from semantic-role
+                                        combinations (Profit Margin, Salary Distribution,
+                                        Variance vs Budget, ...), not hardcoded columns
+  Stage 3  interpret_question        — narrows candidate analyses to what the question
+                                        asks; resolves which curated KPI (if a domain
+                                        plugin has one) and which filters (fiscal_year,
+                                        region, ...) the question is about
+  Stage 4  plan_analytics            — WHAT is analytically relevant (structural pattern
+                                        rules); a domain plugin's enhance_plan() then
+                                        injects/overrides curated-KPI-grounded analyses
+  Stage 5  schedule                  — WHEN/HOW MANY, within a budget (max 8 parallel,
+                                        max 3 ML, max 2 expensive) — requested/KPI-grounded
+                                        analyses are never trimmed
+  Stage 6+7 execute_analyses         — per scheduled analysis: ModelSelector picks an
+                                        algorithm (ML or deterministic, config/
+                                        model_registry.yml — never a fixed intent→model
+                                        dict), the matching Analyzer executes it
+  Stage 8  (EvidenceBuilder)         — one Evidence per analysis; flattens to the old flat
+                                        shape for a single analysis, nests under
+                                        analyses[type] for multi-analysis "report mode"
+  Stage 9  narrate                   — Groq, or a deterministic template formatter —
+                                        unchanged logic, only its input shape changed
+  record_memory                      — sliding-window conversation history, persisted to
+                                        Postgres by conversation_id
   → response
 ```
 
-A thin `app/main.py`/`app/routes/analyze.py` shell over a LangGraph `StateGraph` (`app/agents/analytics_agent/`), same shape as Agent 1/2. Unlike the other two data-intake agents, this graph is built **fresh per request** rather than once at import time — every request answers a question about a *different* uploaded dataset, so its DuckDB connection, rule engine, and ML-readiness-gated tools all have to be bound to that request's own inputs.
+A thin `app/main.py`/`app/routes/analyze.py` shell over a LangGraph `StateGraph` (`app/agents/analytics_agent/`), same shape as Agent 1/2. Unlike the other two data-intake agents, this graph is built **fresh per request** rather than once at import time — every request analyzes a *different* uploaded dataset, so its DuckDB connection, rule engine, and readiness-gated model selection all have to be bound to that request's own inputs.
+
+### Domain Plugin architecture
+
+`DomainPlugin` (`app/services/domain_plugins/base.py`) is the single extension point for domain-specific behavior — additive only, never `if domain == X: ... else: ...` in the generic engine:
+
+| Plugin | Curated KPIs | Driver columns | Preferred deterministic strategy | Notes |
+|---|---|---|---|---|
+| `InsurancePlugin` | 17 (Gross Written Premium, Loss Ratio, Combined Ratio, Underwriting Result, ...) | 14 pre-computed variance drivers | Linear Trend (forecast), Z-Score (anomaly), Insurance Combined Ratio Buckets (segmentation) | Reference domain — byte-identical to the pre-redesign agent for every existing query shape |
+| `GenericDomainPlugin` | None (empty catalog) | None (correlation-based root cause instead) | None (registry default order) | The true "no plugin matched" fallback — used whenever `detected_domain` isn't forwarded or doesn't match a registered plugin, so an unrelated dataset never silently inherits Insurance's KPI catalog |
+
+`PluginRegistry.find_plugin(detected_domain)` matches on Agent 1's canonicalized domain string; adding a new domain is one new plugin (KPI definitions + optional driver columns), zero changes to the generic Stage 1-9 core.
 
 ## API
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/analyze` | Answer one business question against an uploaded CSV. Params: `file` (multipart upload), `business_question` (str), `conversation_id` (optional str — omit for a new conversation; pass back a prior response's `conversation_id` to continue it), `ml_readiness` (float, default 99.75), `llm_readiness` (float, default 99.75), `feature_recommendation` (optional JSON string — Agent 2's per-column feature classification for this upload, used only to cross-check the hardcoded ML feature-column lists still match this dataset's schema; never blocks the request), `ml_readiness_breakdown` / `llm_readiness_breakdown` (optional JSON strings — Agent 2's full readiness assessment, i.e. strengths/blocking_issues/evidence, for the respective gate; surfaced in `execution_trace` so the gate can explain *why*, not just report a score; never blocks the request if omitted or malformed). |
+| POST | `/analyze` | Answer a business question against an uploaded CSV (or run report mode with no question — see below). Params: `file` (multipart upload), `business_question` (str — empty/generic strings like `"Analyze this dataset"` trigger multi-analysis report mode instead of a single curated-KPI answer), `conversation_id` (optional str — omit for a new conversation), `ml_readiness` / `llm_readiness` (float, default 99.75). Optional Agent 2 fields, all inert/gracefully-degrading if omitted or malformed: `feature_recommendation` (JSON string — simple per-column classification, used only to cross-check the hardcoded ML feature-column lists in `config/ml_config.yml`), `ml_readiness_breakdown` / `llm_readiness_breakdown` (JSON strings — Agent 2's full readiness assessment, surfaced in `execution_trace`'s gate objects), `column_profiles` (JSON string, a list — Agent 2's per-column semantic classification, builds the real `DatasetContext` instead of falling back to `LocalSchemaInferer`), `hierarchy` (JSON string, a dict — Agent 2's detected drill-down hierarchy), `charts` (JSON string, a list — Agent 2's pre-selected chart candidates), `full_feature_recommendation` (JSON string, a dict — target_column/problem_type/recommended_approach/feature-drop columns/confidence), `detected_domain` (str — Agent 1's business_domain classification; selects the matching `DomainPlugin`, or `GenericDomainPlugin` if none matches). |
 | GET | `/health` | Liveness check — no downstream agents to ping. |
 
 ### Response shape
@@ -45,23 +85,23 @@ A thin `app/main.py`/`app/routes/analyze.py` shell over a LangGraph `StateGraph`
     {"step": "narration", "engine": "Groq", "gate": {"name": "llm_readiness", "score": 95.77, "threshold": 75.0, "passed": true, "breakdown": null}, "reason": "LLM readiness (95.8%) met the 75.0% threshold — narrated by Groq.", "duration_ms": 270.7}
   ],
   "execution_summary": {
-    "intent": "forecast", "tools_used": ["RuleEngine", "SQLTool", "MLTool→Prophet/LightGBM", "ExplanationTool"],
+    "intent": "forecast", "tools_used": ["RuleEngine", "SQLTool", "Prophet", "ExplanationTool"],
     "ml_engine": "Prophet", "narration_engine": "Groq", "execution_time_seconds": 0.663, "fallback_used": false
   }
 }
 ```
 
-`execution_trace`/`execution_summary` are built once from the LangGraph run's final state — `null` on `status: "error"` rather than fabricating an explanation for a genuine crash. `gate.breakdown` is `null` when the caller didn't supply `ml_readiness_breakdown`/`llm_readiness_breakdown` (a direct `/analyze` call with just the bare scores). `model_version` only appears on an ML-gated step (`forecast`/`anomaly`/`segment`) that actually ran a model — never on the deterministic-fallback path. Prophet reports `last_run_at` rather than a training date since it refits on every query; IsolationForest/K-Means report `trained_at` plus an explicitly-`null` `accuracy_metric` (both unsupervised — no fabricated number, same reasoning as the LightGBM/K-Means confidence field being omitted rather than invented). `duration_ms` on every step is real per-node wall-clock time from `graph.stream()`, not estimated.
+`execution_trace`/`execution_summary` are built once from the LangGraph run's final state — `null` on `status: "error"` rather than fabricating an explanation for a genuine crash. One step per scheduled analysis: a curated-KPI query (`kpi_summary`/`kpi_variance`/`root_cause`/`trend`/`forecast`) or a keyword-narrowed generic query schedules exactly one, so `execution_trace` looks exactly like the example above; a bare/generic `business_question` against a dataset with no matching curated KPI runs **report mode** — one step per scheduled analysis (up to the budget), `execution_summary.intent` is `"report"`, and `response` has one narrated section per analysis type. `gate.breakdown` is `null` when the caller didn't supply `ml_readiness_breakdown`/`llm_readiness_breakdown`. `model_version` only appears on an ML-gated step that actually ran a model — never on the deterministic-fallback path. `duration_ms` on every step is real per-node wall-clock time from `graph.stream()`.
 
-Normally called by [`Agent-Orchestrator`](../Agent-Orchestrator) as the pipeline's optional third stage (Insurance domain + CSV + `business_question` only) — see the [root API reference](../API_REFERENCE.md#agent-3--analytics-agent-optional-third-stage) for that integration, including the readiness-breakdown forwarding. The orchestrator never passes `conversation_id` (it's stateless — every `/pipeline/run` or `/pipeline/ask` call gets a fresh conversation), so multi-turn memory only applies when calling `POST /analyze` directly. Can also be exercised locally without an HTTP server via `scripts/cli.py` (see below).
+Normally called by [`Agent-Orchestrator`](../Agent-Orchestrator) as the pipeline's optional third stage — see the [root API reference](../API_REFERENCE.md#agent-3--analytics-agent-optional-third-stage) for that integration, including the `column_profiles`/`hierarchy`/`charts`/`detected_domain` forwarding that builds a real `DatasetContext` and selects the right `DomainPlugin`. The orchestrator never passes `conversation_id` (it's stateless), so multi-turn memory only applies to a direct `POST /analyze` caller. Can also be exercised locally without an HTTP server via `scripts/cli.py` (see below).
 
 ## Conversation Memory
 
 Backed by Postgres — one table (`agent3.conversation_turns`) on the same [`Shared-Postgres`](../Shared-Postgres) instance Agent 1/2 already use, isolated in its own schema. This matters more than it might look: `run_analytics_graph()` builds a brand-new graph (and therefore a brand-new `MemoryManager`) on *every single HTTP request* — without real persistence there was no way for two separate `POST /analyze` calls to share history at all, restart or no restart. `conversation_id` is what ties requests back to the same history.
 
-- Pass the same `conversation_id` on the next call to continue a conversation — filter/KPI carryover ("what about EMEA?" after an FY2025 GWP question) and the LLM narrator's prior-turn context both depend on this.
-- History survives service restarts (it didn't before — the retired CLI's in-process `AnalyticsAgent` object was the only thing keeping turns alive, and even that reset on every subprocess spawn).
-- **Non-fatal if Postgres is down**: `init_db()` at startup logs an error and continues rather than crashing the service; `MemoryManager` degrades to in-process-only, non-persistent history for that request if a load or save fails. A question always gets answered even if memory can't be read or written.
+- Pass the same `conversation_id` on the next call to continue a conversation — filter/KPI carryover ("what about EMEA?" after an FY2025 GWP question) and the LLM narrator's prior-turn context both depend on this. Filter/KPI carryover is only meaningful for a domain plugin with a curated KPI catalog (Insurance today) — a generic dataset's report-mode requests don't have a "current KPI" to carry forward.
+- History survives service restarts.
+- **Non-fatal if Postgres is down**: `init_db()` at startup logs an error and continues rather than crashing the service; `MemoryManager` degrades to in-process-only, non-persistent history for that request if a load or save fails.
 - Schema/table are created automatically at startup (`app/services/database.py::init_db()`, called from `app/main.py`'s lifespan) — nothing to migrate by hand.
 
 ## Local Setup
@@ -108,7 +148,7 @@ Reads the dataset from `DATASET_PATH` (see Environment Variables) instead of an 
 | POSTGRES_USER *(root `.env`)* | postgres | Connects as the `postgres` superuser, like Agent 1 — not a dedicated role like Agent 2's `mva_user`, since `agent3`'s schema is created idempotently by this service's own `init_db()` at every startup. |
 | POSTGRES_PASSWORD *(root `.env`)* | postgres | |
 
-Domain config (KPI definitions, business rules, ML hyperparameters, feature columns) lives in `config/*.yml`/`config/rules/*.json`, not environment variables — see `app/config.py`'s module docstring for the full priority order.
+Domain config lives in `config/*.yml`/`config/rules/*.json`/`app/services/domain_plugins/*/`, not environment variables — see `app/config.py`'s module docstring for the full priority order. `config/model_registry.yml` (Stage 6's algorithm-selection catalog — every ML and deterministic algorithm, keyed by analysis type) is distinct from `ml/model_registry.json` (runtime metadata: last-trained/last-run timestamps, read by `execution_trace`'s `model_version` field).
 
 ## Model Training
 
@@ -118,7 +158,7 @@ Domain config (KPI definitions, business rules, ML hyperparameters, feature colu
 ..\venv\Scripts\python.exe train.py --confusion-matrix    # show XGBoost confusion matrix
 ```
 
-Trains Prophet-free LightGBM, IsolationForest, XGBoost, and K-Means against `DATASET_PATH`, saving artifacts to `ml/trained/*.pkl` (query-time code predicts against these persisted models instead of refitting per request). `app/main.py`'s startup lifespan runs `app/services/boot_trainer.py`'s freshness check once per process lifetime — if `DATASET_PATH` is newer than the saved models (or any are missing), it retrains automatically before the service starts accepting requests.
+Trains Prophet-free LightGBM, IsolationForest, XGBoost, and K-Means against `DATASET_PATH`, saving artifacts to `ml/trained/*.pkl` (query-time code predicts against these persisted models instead of refitting per request). `app/main.py`'s startup lifespan runs `app/services/boot_trainer.py`'s freshness check once per process lifetime — if `DATASET_PATH` is newer than the saved models (or any are missing), it retrains automatically before the service starts accepting requests. **Insurance-only today** — per-dataset model lifecycle (fit-fresh or cache by dataset fingerprint for a non-Insurance upload) is planned but not yet built; every non-Insurance ML analyzer fits fresh on each request until then.
 
 ## Running Tests
 
@@ -126,14 +166,16 @@ Trains Prophet-free LightGBM, IsolationForest, XGBoost, and K-Means against `DAT
 ..\venv\Scripts\python.exe -m pytest tests/ -v
 ```
 
-Covers the rule engine, analytics tool, ML persistence (including the AST-safe rule-condition evaluator), feature-column validation, LangGraph routing, Postgres-backed conversation memory (round-trip persistence and DB-down degradation, against the real shared instance), the execution trace/summary builder (`tests/test_execution_trace.py` — readiness-breakdown summarization, per-step timing, model versioning, all against the real `ml/model_registry.json` rather than hardcoded values), and a 12-case end-to-end harness exercising every intent (real Groq calls where a key is configured — slower and rate-limit-prone, but confirms the whole path works, not just its parts).
+19 files, 265 tests. Covers every stage of the pipeline above: capability resolution, KPI discovery, question interpretation, planning, scheduling, the model registry/selector, all 16 analyzers (+ the 2 curated-KPI analyzers), the domain plugin system (including a byte-for-byte check that the Insurance plugin's copied config files match the originals), the evidence builder, LangGraph routing, the execution trace/summary builder, Postgres-backed conversation memory (against the real shared instance), and a 12-case end-to-end harness exercising every curated-KPI query shape (real Groq calls where a key is configured — slower and rate-limit-prone, but confirms the whole path works, not just its parts).
 
 ## Known Limitations
 
-- Only understands the Insurance dataset's specific column schema (hardcoded, matching `Schema-Intelligence-Layer/test_data/insurance_variance_data_native.csv`) and only reads CSV, not Excel.
+- Real ML models (Prophet/LightGBM/IsolationForest/XGBoost/K-Means) are trained once against `DATASET_PATH` (Insurance) and persisted — a non-Insurance upload's ML-eligible analyses always fit fresh per request rather than predicting against a cached model. Deterministic fallbacks (the large majority of what a generic dataset actually gets, since ML requires a high `ml_readiness_score`) are unaffected.
+- ML feature-column lists (`config/ml_config.yml` — which ratio columns feed IsolationForest/KMeans, which columns LightGBM treats as categorical) are hand-curated Insurance-domain expertise, not derived from Agent 2's `feature_recommendation` — used only as a diagnostic cross-check, never to swap which columns a model actually uses. This only affects Insurance's own ML paths; a non-Insurance dataset's generic analyzers (Stage 7) derive their feature columns from `DatasetContext` directly.
+- Only CSV uploads, no Excel.
 - No authentication in v1.
-- ML feature-column lists (`config/ml_config.yml`) are hand-curated Insurance-domain expertise, not derived from Agent 2's generic `feature_recommendation` — `feature_recommendation` is used only as a diagnostic cross-check (see `POST /analyze`'s `feature_recommendation` param above), never to swap which columns a model actually uses.
 - Multi-turn conversation memory only works when a caller explicitly passes `conversation_id` back on each request — `Agent-Orchestrator` doesn't do this today (it's intentionally stateless), so pipeline-driven questions each start a fresh conversation. Only a direct `POST /analyze` caller (or `scripts/cli.py --interactive`) gets continuity.
+- Finance/HR/Payments/Customer domain plugins are not yet built — those datasets currently get `GenericDomainPlugin` (fully functional report mode, no curated KPI catalog) rather than a domain-specific one.
 
 ## Decisions Log
 
@@ -142,8 +184,13 @@ Covers the rule engine, analytics tool, ML persistence (including the AST-safe r
 | 2026-07-15 | Groq API chosen for faster inference; DuckDB chosen for SQL (no database server needed); all monetary values in USD. |
 | 2026-07-17 | Vendored into the `mva` monorepo as Agent 3, initially wired into `Agent-Orchestrator` as a CLI subprocess. |
 | 2026-07-17 | Fixed `eval()`-based rule evaluation (security hole + a dormant bug — 4 rules using uppercase `AND` had silently never fired since inception) with an AST-whitelist evaluator; added real model persistence (`ml/persistence.py`); wired in the previously-dead `MemoryManager`; added `llm_readiness` gating (mirrors `ml_readiness`) and `ml/feature_validation.py`. |
-| 2026-07-17 | Rebuilt as a full FastAPI + LangGraph service (`app/main.py`, `app/routes/`, `app/agents/analytics_agent/`, `app/services/`) to match Agent 1/2/3's shared architecture, and `Agent-Orchestrator`'s `call_agent3` rewired from a subprocess invocation to a plain `httpx` call — the same shape as its call to Agent 2. The old `main.py`/`tools/`/flat `ml/*.py` CLI structure was retired once the new service was verified working end-to-end. |
-| 2026-07-18 | Added a Postgres schema (`agent3`, same shared instance as Agent 1/2) and moved conversation memory from an in-process, always-empty-per-request list to real cross-request persistence keyed by `conversation_id` — this is what makes the sliding-window filter/KPI carryover actually work in the HTTP world, which it structurally couldn't before. `init_db()` failure is deliberately non-fatal, unlike Agent 1's — memory is an enhancement, not core to answering a question. |
-| 2026-07-18 | Fixed `AnalyticsTool.variance()` computing favorable/unfavorable purely from the arithmetic sign, never reading each KPI's own `higher_is_better` flag (defined in `config/rules/kpi_definitions.json`, required by the schema, but read nowhere in computation code) — every "lower is better" ratio KPI (loss ratio, expense ratio, combined ratio, ...) had its variance direction backwards. |
-| 2026-07-18 | Added `execution_trace`/`execution_summary` to every `POST /analyze` response — a step-by-step decision log (intent → ML gate/engine → LLM gate/engine) built once from the graph's final state rather than touching each of the 7 handler methods. The one real gap it closes: a passed `llm_readiness` gate whose Groq call itself fails is now reported distinctly from a gate that never passed (`ExplanationTool.last_engine_used`, a new observable, makes this possible). |
-| 2026-07-18 | Enriched the trace further: Agent 2's full readiness assessment (not just the bare score) now flows through `Agent-Orchestrator` into `execution_trace`'s gate objects, summarized into a strongest/weakest-factor sentence; real per-step `duration_ms` via `graph.stream(..., stream_mode="updates")` instead of `graph.invoke()`, with zero handler changes; and `model_version` metadata read from `ml/model_registry.json` — Prophet reported as `refit_per_query` (it has no fixed training date) rather than mislabeled with a fake one, IsolationForest/K-Means with an explicit `null` accuracy metric (unsupervised — no number to report) rather than a fabricated one. |
+| 2026-07-17 | Rebuilt as a full FastAPI + LangGraph service (`app/main.py`, `app/routes/`, `app/agents/analytics_agent/`, `app/services/`) to match Agent 1/2/3's shared architecture, and `Agent-Orchestrator`'s `call_agent3` rewired from a subprocess invocation to a plain `httpx` call. The old `main.py`/`tools/`/flat `ml/*.py` CLI structure was retired once the new service was verified working end-to-end. |
+| 2026-07-18 | Added a Postgres schema (`agent3`) and moved conversation memory from an in-process, always-empty-per-request list to real cross-request persistence keyed by `conversation_id`. |
+| 2026-07-18 | Fixed `AnalyticsTool.variance()` computing favorable/unfavorable purely from the arithmetic sign, never reading each KPI's own `higher_is_better` flag — every "lower is better" ratio KPI had its variance direction backwards. |
+| 2026-07-18 | Added `execution_trace`/`execution_summary` to every `POST /analyze` response — a step-by-step decision log built once from the graph's final state. |
+| 2026-07-18 | Enriched the trace further: Agent 2's full readiness assessment flows into `execution_trace`'s gate objects; real per-step `duration_ms` via `graph.stream(..., stream_mode="updates")`; `model_version` metadata from `ml/model_registry.json`. |
+| 2026-07-21 (Phase 0) | Began the Agent 3 redesign — a domain-agnostic, dataset-driven analytics engine, not an Insurance-only intent dispatcher. Added `DatasetContext`/`DatasetContextBuilder`/`LocalSchemaInferer` and the Orchestrator's additive forwarding of `column_profiles`/`hierarchy`/`charts`/`feature_recommendation`/`detected_domain` — inert this phase, every existing handler unchanged. |
+| 2026-07-21 (Phase 1) | Built Stages 1-6 offline (not yet wired to execution): `AnalyticsCapabilityResolver` (structural/execution split, never recomputes Agent 2's readiness scores — enforced at the function signature), `SemanticKPIDiscovery`, `BusinessQuestionInterpreter`, `AnalyticsPlanner`/`AnalyticsScheduler` (WHAT vs. WHEN/HOW MANY, budget-bounded), `ModelRegistry`/`ModelSelector` (every algorithm, ML or deterministic, registers the same way in `config/model_registry.yml` — never a fixed intent→model dict). |
+| 2026-07-21 (Phase 2) | Extracted Insurance's hardcoded content into `DomainPlugin`/`PluginRegistry`/`InsurancePlugin` — generalized `RuleEngine`/`RootCauseTool`/`SQLTool` to accept config/columns as constructor params, defaulting to Insurance's exact values. Verified byte-identical via a live 4-service diff against a pre-refactor snapshot. |
+| 2026-07-22 (Phase 3) | Built all 16 `Analyzer` classes (Stage 7) and `Evidence`/`EvidenceBuilder` (Stage 8), plus ~25 new deterministic/ML strategy classes the registry already referenced — root cause gained a generic correlation-based mode (deterministic primary, unchanged for datasets with known driver columns) alongside Insurance's exact labeled-driver mode. |
+| 2026-07-22 (Phase 4) | Replaced the old 7-handler intent-dispatch graph with the linear Stage 1-9 topology above. Closed a gap the registry-driven design hadn't accounted for — curated-KPI queries (`kpi_summary`/`kpi_variance`, ports of the old `show_kpi`/`variance` handlers) and wired `ModelSelector` to actually consult a domain plugin's preferred deterministic strategy (built in Phase 2, never called until now). Live end-to-end testing against a non-Insurance HR dataset surfaced and fixed 4 real bugs: a keyword-interpreter/scheduler mismatch that split one query into four; a segmentation strategy returning an unnested evidence shape; **no true "no domain matched" fallback** (any unlabeled dataset was silently inheriting Insurance's KPI catalog — `GenericDomainPlugin` fixes this); and a column-order mismatch between the generic planner and the forecast/trend analyzers (visible as `1970-01-01` epoch dates in forecast output). Golden-snapshot diff against the pre-redesign response: only the deliberate `show_kpi`→`kpi_summary` rename differs, every deterministic evidence number matches exactly. |

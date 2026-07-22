@@ -18,7 +18,7 @@ Four services — two data-intake agents, an orchestrator, and one optional Insu
 **Agent 1** validates uploads, runs the 10-check quality gate, and classifies business domain via LLM.
 **Agent 2** does deep column profiling, quality scoring, hierarchy detection, chart + rule generation.
 **Orchestrator** runs a file through Agent 1 then Agent 2 (then optionally Agent 3) in one call, no manual domain entry needed.
-**Agent 3** answers one Insurance business question at a time against the uploaded dataset.
+**Agent 3** is a domain-agnostic analytics engine (Insurance is its fully-built reference domain); the Orchestrator's pipeline routes only Insurance datasets to it today, but a direct call works against any uploaded dataset.
 
 ---
 
@@ -97,7 +97,7 @@ The one call to make if you just want a file profiled end to end. Sends the uplo
 
 ### Agent 3 — Analytics Agent (optional third stage)
 
-Vendored into this repo at `Analytics-Agent/` (originally a colleague's separate project, github.com/VirenKhapra/Analytics-agent-for-project-3) — a FastAPI service like Agent 1/2, called by the orchestrator over `httpx` the same way it calls Agent 2. It installs from the same root `requirements.txt` and runs under the same shared venv as the other three folders. It answers one business question at a time over an Insurance dataset (KPI lookup, variance, root-cause, forecast, anomaly detection, segmentation).
+Vendored into this repo at `Analytics-Agent/` (originally a colleague's separate project, github.com/VirenKhapra/Analytics-agent-for-project-3) — a FastAPI service like Agent 1/2, called by the orchestrator over `httpx` the same way it calls Agent 2. It installs from the same root `requirements.txt` and runs under the same shared venv as the other three folders. Internally it's a domain-agnostic, dataset-driven analytics engine (see `Analytics-Agent/README.md`) with Insurance as its fully-built reference domain (curated KPI lookup, variance, root-cause, forecast, anomaly detection, segmentation); a dataset with no matching domain plugin still gets a real generic multi-analysis report instead of a skip, though the Orchestrator's own gate below only ever routes Insurance datasets to it today.
 
 Runs only when **all** of: `primary_domain == "Insurance"`, the upload is a `.csv`, and `business_question` was supplied. Fed Agent 2's `ml_readiness`/`llm_readiness` scores **and** their full breakdown (`agent2.readiness_assessments[]` — strengths/blocking_issues/evidence, not just the bare score) as Form fields, so Agent 3's `execution_trace` can explain *why* a readiness gate passed or failed, not just report a number. Response shapes:
 
@@ -124,7 +124,7 @@ Configured via `Agent-Orchestrator/.env`: `ANALYTICS_AGENT_BASE_URL` (defaults t
 
 Every `status: "ok"` response (from `/pipeline/run`, `/pipeline/ask`, or `/analyze` directly) carries these two fields, built once from the LangGraph run's final state — `null` on `status: "error"` rather than fabricating an explanation for a genuine crash.
 
-`execution_trace` is a list of steps (`intent_detection` → the matched intent's handler → `narration`, when narration ran). Each entry:
+`execution_trace` is a list of steps (`intent_detection` → one step per scheduled analysis (usually just one) → `narration`, when narration ran). Each entry:
 
 ```jsonc
 {
@@ -140,8 +140,9 @@ Every `status: "ok"` response (from `/pipeline/run`, `/pipeline/ask`, or `/analy
 }
 ```
 
-- `gate` is `null` for intents with no ML/LLM readiness check (show_kpi, variance, root_cause, trend). `gate.breakdown` is `null` when the caller didn't supply one (a direct `/analyze` call outside the Orchestrator has no breakdown to forward).
+- `gate` is `null` for analysis types with no ML/LLM readiness check (`kpi_summary`, `kpi_variance`, `root_cause`, `trend`, and every "fully generic" structural analysis type — clustering, classification, correlation, ...). `gate.breakdown` is `null` when the caller didn't supply one (a direct `/analyze` call outside the Orchestrator has no breakdown to forward).
 - `model_version` only appears when the ML-gated step actually ran a model (not on the fallback path). Prophet refits every query, so it reports `last_run_at`, not a training date; IsolationForest/K-Means report `trained_at` plus an explicitly-`null` `accuracy_metric` (both unsupervised — no fabricated number). root_cause's XGBoost corroboration and forecast's LightGBM key-drivers evidence cite their real registry accuracy/r² in `reason` when present.
+- A bare/generic `business_question` against a dataset with no curated KPI to resolve runs **report mode** instead: one `execution_trace` step per scheduled analysis (budget-bounded, up to 8), `execution_summary.intent == "report"`, and `response` has one narrated section per analysis type.
 
 `execution_summary` is a compact rollup: `{"intent", "tools_used", "ml_engine", "narration_engine", "execution_time_seconds", "fallback_used"}` — `fallback_used` is `true` if either readiness gate didn't pass, or Groq was attempted but its call itself failed.
 
@@ -164,7 +165,7 @@ Requires re-uploading the file because neither Agent 1 nor Agent 2 durably store
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/analyze` | Answer one business question against an uploaded CSV. Params: `file` (multipart upload), `business_question` (str), `conversation_id` (optional str — omit for a new conversation; pass back a prior response's `conversation_id` to continue it), `ml_readiness` (float, default 99.75), `llm_readiness` (float, default 99.75), `feature_recommendation` (optional JSON string — Agent 2's per-column feature classification, used only to validate Agent 3's hardcoded ML feature lists still match this dataset), `ml_readiness_breakdown` / `llm_readiness_breakdown` (optional JSON strings — Agent 2's full readiness assessment for the respective gate, surfaced in `execution_trace`'s gate objects; never blocks the request if omitted or malformed) |
+| `POST` | `/analyze` | Answer a business question against an uploaded CSV (or run multi-analysis report mode with a bare/generic question — see above). Params: `file` (multipart upload), `business_question` (str), `conversation_id` (optional str — omit for a new conversation; pass back a prior response's `conversation_id` to continue it), `ml_readiness` (float, default 99.75), `llm_readiness` (float, default 99.75), `feature_recommendation` (optional JSON string — simple per-column classification, used only to validate the hardcoded ML feature lists in `config/ml_config.yml` still match this dataset), `ml_readiness_breakdown` / `llm_readiness_breakdown` (optional JSON strings — Agent 2's full readiness assessment for the respective gate, surfaced in `execution_trace`'s gate objects; never blocks the request if omitted or malformed), `column_profiles` / `hierarchy` / `charts` / `full_feature_recommendation` (optional JSON strings — Agent 2's richer per-column semantic classification/drill-down hierarchy/chart candidates/target-column recommendation; builds a real `DatasetContext` instead of falling back to local schema inference), `detected_domain` (optional str — Agent 1's business_domain classification; selects the matching `DomainPlugin`, or the generic no-KPI-catalog engine if none matches) |
 | `GET` | `/health` | Liveness check — Agent 3 has no downstream agents to ping. |
 
 `conversation_id` is always present in the response, generated fresh if the caller didn't supply one. Conversation memory (filter/KPI carryover, LLM prior-turn context) is persisted in Postgres (`agent3` schema on the same [`Shared-Postgres`](../Shared-Postgres) instance Agent 1/2 use) keyed by this id — non-fatal if that database is unreachable, degrading to a single-turn, non-persistent answer rather than failing the request. The Orchestrator never passes `conversation_id` (`/pipeline/run` and `/pipeline/ask` are both stateless), so multi-turn continuity only applies when calling `POST /analyze` directly.
