@@ -14,6 +14,7 @@ from typing import Literal
 
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_groq import ChatGroq
+from langchain_openai import AzureChatOpenAI
 
 from app.config import settings
 from app.agents.classification_agent.config import get_agent_tool_names, get_llm_config
@@ -31,6 +32,31 @@ FALLBACK_CLASSIFICATION = LLMClassification(
     confidence=0.0,
     reason="The classification agent did not produce a result.",
 )
+
+
+def _build_chat_model(temperature: float, max_tokens: int):
+    """Azure OpenAI when configured, else Groq exactly as before -- a
+    selection, not a chain: unlike the httpx-based LLM paths elsewhere in
+    this codebase, this ReAct tool-routing coordinator picks one provider
+    up front rather than retrying a second one mid-request. The node-level
+    try/except around the whole classification run (already existing,
+    see schema_intelligence_agent/nodes/pipeline.py) is still the real
+    fallback if whichever provider fails."""
+    if settings.AZURE_OPENAI_API_KEY and settings.AZURE_OPENAI_ENDPOINT and settings.AZURE_OPENAI_DEPLOYMENT:
+        return AzureChatOpenAI(
+            azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
+            azure_deployment=settings.AZURE_OPENAI_DEPLOYMENT,
+            api_key=settings.AZURE_OPENAI_API_KEY,
+            api_version="2024-08-01-preview",
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+    return ChatGroq(
+        model=settings.GROQ_MODEL,
+        api_key=settings.GROQ_API_KEY,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
 
 
 def _extract_tool_result(messages: list, tool_name: str) -> str | None:
@@ -53,12 +79,7 @@ class ClassificationAgentNodes:
         registry = tools_to_registry(all_tools)
         self.tools = [registry[name] for name in get_agent_tool_names() if name in registry]
 
-        llm = ChatGroq(
-            model=settings.GROQ_MODEL,
-            api_key=settings.GROQ_API_KEY,
-            temperature=llm_config["temperature"],
-            max_tokens=llm_config["max_tokens"],
-        )
+        llm = _build_chat_model(llm_config["temperature"], llm_config["max_tokens"])
         self._llm_with_tools = llm.bind_tools(self.tools)
 
     def call_model(self, state: ClassificationAgentState) -> dict:

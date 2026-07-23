@@ -21,7 +21,7 @@ router = APIRouter()
     "/upload-dataset",
     response_model=UploadResponse,
     summary="Upload a CSV or Excel dataset",
-    description="Accepts a CSV or Excel file, validates it, persists/appends it in its dedicated PostgreSQL database, and registers/classifies its metadata.",
+    description="Accepts a CSV or Excel file, validates it, persists it in its dedicated PostgreSQL database, and registers/classifies its metadata. Re-uploading an already-seen filename replaces the prior version rather than combining with it.",
     responses={
         400: {"description": "File unreadable or corrupted"},
         413: {"description": "File exceeds MAX_UPLOAD_SIZE_MB"},
@@ -34,15 +34,15 @@ async def upload_dataset(
     file: UploadFile = File(..., description="CSV or Excel file to upload"),
     force_reclassify: bool = Query(
         False,
-        description="When appending to an existing dataset, re-run LLM column descriptions and "
-                    "domain classification instead of reusing the original result. Use this to "
-                    "recover a dataset stuck with a failed/fallback classification (e.g. from an "
-                    "earlier LLM rate-limit or connection error).",
+        description="When replacing an existing dataset (same filename re-uploaded), re-run LLM "
+                    "column descriptions and domain classification instead of reusing the original "
+                    "result. Use this to recover a dataset stuck with a failed/fallback "
+                    "classification (e.g. from an earlier LLM rate-limit or connection error).",
     ),
 ):
     """
     Main upload endpoint — delegates the full pipeline (validate, load, quality
-    gate, append-vs-new detection, classification, persistence) to the
+    gate, replace-vs-new detection, classification, persistence) to the
     Schema Intelligence Agent's LangGraph (app/agents/schema_intelligence_agent/graph.py). See that
     module's docstring for the graph topology.
     """

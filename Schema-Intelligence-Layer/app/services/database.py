@@ -58,7 +58,7 @@ SET business_domain = %s,
 WHERE dataset_id = %s;
 """
 
-UPDATE_AFTER_APPEND_SQL = """
+UPDATE_AFTER_REUPLOAD_SQL = """
 UPDATE dataset_metadata
 SET row_count = %s,
     column_count = %s,
@@ -316,7 +316,7 @@ def get_metadata_by_name(filename: str) -> Optional[DatasetMetadata]:
     return _row_to_metadata(row)
 
 
-def update_metadata_after_append(
+def update_metadata_after_reupload(
     dataset_id: str,
     row_count: int,
     column_count: int,
@@ -326,11 +326,12 @@ def update_metadata_after_append(
     sample_data: list[dict],
     processing_status: str = "Completed",
 ) -> None:
-    """Update metadata fields after appending new rows to an in-memory dataset."""
+    """Update metadata fields after a same-filename re-upload replaces the
+    prior version of this dataset (see check_existing_dataset)."""
     conn = _get_connection()
     try:
         cur = conn.cursor()
-        cur.execute(UPDATE_AFTER_APPEND_SQL, (
+        cur.execute(UPDATE_AFTER_REUPLOAD_SQL, (
             row_count,
             column_count,
             json.dumps(column_names),
@@ -342,9 +343,9 @@ def update_metadata_after_append(
         ))
         conn.commit()
         cur.close()
-        logger.info(f"Updated metadata after append for dataset {dataset_id}: row_count={row_count}")
+        logger.info(f"Updated metadata after reupload for dataset {dataset_id}: row_count={row_count}")
     except Exception as e:
-        logger.error(f"Failed to update metadata after append for {dataset_id}: {e}")
+        logger.error(f"Failed to update metadata after reupload for {dataset_id}: {e}")
         raise
     finally:
         conn.close()

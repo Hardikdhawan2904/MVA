@@ -31,22 +31,27 @@ agent:
   data_sources:
     - metadata_catalog: >
         Postgres-backed dataset catalog (app/services/database.py). insert_metadata
-        creates the initial row for a new dataset; update_metadata_after_append and
+        creates the initial row for a new dataset; update_metadata_after_reupload and
         update_metadata_after_classification keep it in sync as rows/classification
-        change; get_metadata_by_name is how an upload is recognized as an append
-        rather than a new dataset.
+        change; get_metadata_by_name is how an upload is recognized as a replacement
+        of an already-cataloged filename rather than a new dataset. Re-uploading an
+        already-seen filename replaces the prior catalog entry outright (not an
+        append/merge) -- every response always reflects exactly the file just
+        uploaded; an informational warning still notes the prior version's row
+        count/timestamp so an accidental re-upload isn't silently invisible.
     - dataframe_registry: >
         In-memory cache of the last-uploaded DataFrame per dataset_id
-        (app/datastore/registry.py: store_dataframe/get_dataframe). Used to combine
-        newly-appended rows with the previously cached DataFrame; if the server
-        restarted and the cache is empty, the append is treated as a replacement
-        instead (logged as a warning, not an error).
+        (app/datastore/registry.py: store_dataframe/get_dataframe) -- just this
+        upload's own data, not combined with anything prior. Used to serve
+        GET /datasets/{dataset_id}/dataframe later; if the server restarted and
+        the cache is empty, that endpoint 404s until the dataset is re-uploaded.
 
   # ── LLM config ──────────────────────────────────────────────────────────────
   llm:
-    provider: Groq
-    model: from_settings   # Settings.GROQ_MODEL — see classification_agent/agent.yaml
-                            # for the one sub-agent that actually makes LLM calls
+    provider: Azure OpenAI (falls back to Groq)   # see classification_agent/agent.yaml
+                            # for the one sub-agent that actually makes LLM calls,
+                            # and its own llm section for how the fallback works
+    model: from_settings   # Settings.GROQ_MODEL / AZURE_OPENAI_DEPLOYMENT
 
   # ── LangGraph ───────────────────────────────────────────────────────────────
   langgraph:

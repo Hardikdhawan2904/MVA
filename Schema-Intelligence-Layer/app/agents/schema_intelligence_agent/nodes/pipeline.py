@@ -10,7 +10,7 @@ function body.
 Two real decision points: quality_gate_router (stop the whole upload before any
 LLM call if the dataset fails the deterministic quality gate) and
 classification_needed_router (skip the classification agent — and every LLM
-call in this service — entirely when appending to an already-classified
+call in this service — entirely when replacing an already-classified
 dataset without force_reclassify).
 """
 
@@ -23,14 +23,14 @@ from typing import Any, Literal
 import pandas as pd
 from fastapi import HTTPException
 
-from app.datastore.registry import get_dataframe, store_dataframe
+from app.datastore.registry import store_dataframe
 from app.agents.classification_agent import run_classification_agent
 from app.agents.schema_intelligence_agent.state import SchemaIntelligenceState
 from app.services.database import (
     get_metadata_by_name,
     get_next_dataset_id,
     insert_metadata,
-    update_metadata_after_append,
+    update_metadata_after_reupload,
     update_metadata_after_classification,
 )
 from app.services.metadata_extractor import extract_metadata
@@ -73,40 +73,42 @@ def validate_and_load(state: SchemaIntelligenceState) -> dict[str, Any]:
     return {"file_extension": file_extension, "df": df}
 
 
-# ── Node 2: existing-dataset lookup (append vs new) ─────────────────────────
-# Runs before the quality gate so an append's combined dataset — not just the
-# newly-uploaded increment — is what actually gets validated. Re-uploading a
-# file that's already been ingested would otherwise always look clean (each
-# individual upload is internally duplicate-free), even though the combined
-# result silently doubles up rows.
+# ── Node 2: existing-dataset lookup (replace vs new) ────────────────────────
+# A filename this service has already seen replaces that prior entry rather
+# than accumulating onto it — every response (row counts, quality report,
+# duplicate-row checks, everything) always reflects exactly the file that
+# was just uploaded, never a silent blend with an earlier upload under the
+# same name. run_quality_gate still surfaces an informational note when a
+# replacement happens (see its own comment) so the "you just uploaded this
+# again" signal isn't lost, it just no longer corrupts the numbers.
 
 def check_existing_dataset(state: SchemaIntelligenceState) -> dict[str, Any]:
     existing = get_metadata_by_name(state["filename"])
     if existing is None:
         return {"existing_metadata": None, "is_new": True, "profiling_df": state["df"]}
 
-    logger.info(f"Dataset '{state['filename']}' already exists (ID: {existing.dataset_id}). Appending rows.")
-    current_df = get_dataframe(existing.dataset_id)
-    if current_df is not None:
-        combined_df = pd.concat([current_df, state["df"]], ignore_index=True)
-    else:
-        logger.warning(
-            f"No cached DataFrame found for {existing.dataset_id} (server likely restarted) — "
-            "prior rows are unavailable, treating upload as a replacement."
-        )
-        combined_df = state["df"]
-
-    return {"existing_metadata": existing, "is_new": False, "profiling_df": combined_df}
+    logger.info(
+        f"Dataset '{state['filename']}' already exists (ID: {existing.dataset_id}, "
+        f"{existing.row_count} rows) — replacing with this upload ({len(state['df'])} rows)."
+    )
+    return {"existing_metadata": existing, "is_new": False, "profiling_df": state["df"]}
 
 
 # ── Node 3: deterministic quality gate ──────────────────────────────────────
-# Validates profiling_df (the post-append, combined dataset for an existing
-# filename; identical to the raw upload for a brand-new one) — not the raw
-# upload alone — so append-time issues like re-uploading the same file are
-# actually visible in the quality report instead of always looking clean.
+# Validates profiling_df (this upload alone — see check_existing_dataset for
+# why it's never combined with a prior upload under the same filename).
 
 def run_quality_gate(state: SchemaIntelligenceState) -> dict[str, Any]:
     report = DataQualityValidator().run_validation(state["profiling_df"])
+
+    existing = state.get("existing_metadata")
+    if existing is not None:
+        report.setdefault("warnings", []).append(
+            f"This filename was previously uploaded on {existing.upload_timestamp} "
+            f"({existing.row_count} rows) — this upload ({len(state['profiling_df'])} rows) "
+            "replaces that version rather than being combined with it."
+        )
+
     if report["decision"] == "FAIL":
         logger.warning(
             f"Dataset '{state['filename']}' failed data quality validation "
@@ -140,7 +142,7 @@ def extract_metadata_node(state: SchemaIntelligenceState) -> dict[str, Any]:
         metadata = extract_metadata(profiling_df, filename, existing.dataset_id, file_extension)
         metadata.quality_score = report["dataset_score"]
         metadata.quality_report = report
-        update_metadata_after_append(
+        update_metadata_after_reupload(
             dataset_id=existing.dataset_id,
             row_count=metadata.row_count,
             column_count=metadata.column_count,

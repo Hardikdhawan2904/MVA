@@ -9,9 +9,10 @@ Topology:
                                                                                                                 ▼
                                                                                                   persist_and_finalize → END
 
-check_existing_dataset runs before the quality gate so an append's combined
-dataset — not just the newly-uploaded increment — is what actually gets
-validated (see nodes/pipeline.py's Node 2/3 comments for why).
+check_existing_dataset resolves a same-filename re-upload as a replacement,
+not an append — every downstream node (quality gate, metadata, response)
+always sees exactly this upload, never a blend with an earlier one under
+the same name (see nodes/pipeline.py's Node 2/3 comments for why).
 
 classify_dataset_node has its own internal ReAct sub-graph (see
 classification_agent/, a self-contained sub-agent package with its own

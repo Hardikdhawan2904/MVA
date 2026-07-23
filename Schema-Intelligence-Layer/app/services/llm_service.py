@@ -6,7 +6,9 @@ Only metadata (column names, types, sample values) is sent to the LLM — never 
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from groq import Groq
+import httpx
 
 from app.config import settings
 from app.models.schemas import DatasetMetadata, LLMClassification
@@ -26,11 +28,57 @@ logger = logging.getLogger(__name__)
 # either prompt comfortably under that cap.
 MAX_COLUMNS_PER_LLM_CALL = 30
 
+# Description batches are independent LLM calls (disjoint column slices) --
+# run them concurrently. Capped, not unbounded, for the same reason as the
+# per-call token cap above: a safe multiple of one batch's request size
+# rather than firing every batch of a very wide dataset at once.
+_MAX_PARALLEL_BATCHES = 5
+
 
 
 def _get_groq_client() -> Groq:
     """Create and return a Groq client instance."""
     return Groq(api_key=settings.GROQ_API_KEY)
+
+
+def _call_azure_openai(messages: list[dict], temperature: float, max_tokens: int) -> str | None:
+    """Best-effort first attempt before Groq -- returns None (never
+    raises) on any failure or when unconfigured, so every existing Groq
+    call site's own try/except-and-fall-back logic stays the real
+    fallback path, unchanged."""
+    if not (settings.AZURE_OPENAI_API_KEY and settings.AZURE_OPENAI_ENDPOINT and settings.AZURE_OPENAI_DEPLOYMENT):
+        return None
+    try:
+        response = httpx.post(
+            f"{settings.AZURE_OPENAI_ENDPOINT.rstrip('/')}/openai/v1/chat/completions",
+            headers={"api-key": settings.AZURE_OPENAI_API_KEY, "Content-Type": "application/json"},
+            json={
+                "model": settings.AZURE_OPENAI_DEPLOYMENT,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            },
+            timeout=30.0,
+        )
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        logger.warning(f"Azure OpenAI call failed: {e} — falling back to Groq")
+        return None
+
+
+def _chat_complete(client: Groq, messages: list[dict], temperature: float, max_tokens: int) -> str:
+    """Azure OpenAI first (if configured), then the given Groq client --
+    raises exactly like a raw client.chat.completions.create(...) call
+    would, so every existing call site's try/except around that call
+    doesn't need to change at all."""
+    azure_content = _call_azure_openai(messages, temperature, max_tokens)
+    if azure_content is not None:
+        return azure_content
+    response = client.chat.completions.create(
+        model=settings.GROQ_MODEL, messages=messages, temperature=temperature, max_tokens=max_tokens,
+    )
+    return response.choices[0].message.content
 
 
 def _strip_json_fences(response_text: str) -> str:
@@ -85,8 +133,8 @@ def _generate_column_descriptions_batch(
     prompt = get_column_descriptions_prompt(context)
 
     try:
-        response = client.chat.completions.create(
-            model=settings.GROQ_MODEL,
+        content = _chat_complete(
+            client,
             messages=[
                 {
                     "role": "system",
@@ -101,7 +149,7 @@ def _generate_column_descriptions_batch(
             max_tokens=2000,
         )
 
-        response_text = _strip_json_fences(response.choices[0].message.content.strip())
+        response_text = _strip_json_fences(content.strip())
         descriptions = json.loads(response_text)
 
         return {col: descriptions.get(col, f"Column '{col}' in the dataset.") for col in batch_names}
@@ -119,13 +167,16 @@ def generate_column_descriptions(metadata: DatasetMetadata) -> dict[str, str]:
     Generate short descriptions for each column using the Groq LLM.
 
     Wide datasets are split into batches of MAX_COLUMNS_PER_LLM_CALL columns so a single
-    prompt never exceeds Groq's per-request token limit — each batch is its own LLM call,
-    merged back into one dict covering every column.
+    prompt never exceeds Groq's per-request token limit — each batch is its own LLM call.
+    Batches are independent (disjoint columns), so they run concurrently and are merged
+    back into one dict covering every column.
     """
     client = _get_groq_client()
     all_descriptions: dict[str, str] = {}
 
-    for start in range(0, len(metadata.column_names), MAX_COLUMNS_PER_LLM_CALL):
+    batch_bounds = list(range(0, len(metadata.column_names), MAX_COLUMNS_PER_LLM_CALL))
+    batches = []
+    for start in batch_bounds:
         batch_names = metadata.column_names[start:start + MAX_COLUMNS_PER_LLM_CALL]
         batch_types = metadata.column_data_types[start:start + MAX_COLUMNS_PER_LLM_CALL]
         batch_metadata = metadata.model_copy(update={
@@ -133,9 +184,15 @@ def generate_column_descriptions(metadata: DatasetMetadata) -> dict[str, str]:
             "column_data_types": batch_types,
             "column_count": len(batch_names),
         })
-        all_descriptions.update(
-            _generate_column_descriptions_batch(client, batch_metadata, batch_names, batch_types)
-        )
+        batches.append((batch_metadata, batch_names, batch_types))
+
+    with ThreadPoolExecutor(max_workers=min(len(batches), _MAX_PARALLEL_BATCHES)) as executor:
+        futures = [
+            executor.submit(_generate_column_descriptions_batch, client, batch_metadata, batch_names, batch_types)
+            for batch_metadata, batch_names, batch_types in batches
+        ]
+        for future in futures:
+            all_descriptions.update(future.result())
 
     return all_descriptions
 
@@ -175,8 +232,8 @@ def classify_dataset(metadata: DatasetMetadata) -> LLMClassification:
     prompt = get_classify_dataset_prompt(context, desc_section)
 
     try:
-        response = client.chat.completions.create(
-            model=settings.GROQ_MODEL,
+        content = _chat_complete(
+            client,
             messages=[
                 {
                     "role": "system",
@@ -191,7 +248,7 @@ def classify_dataset(metadata: DatasetMetadata) -> LLMClassification:
             max_tokens=500,
         )
 
-        response_text = _strip_json_fences(response.choices[0].message.content.strip())
+        response_text = _strip_json_fences(content.strip())
         result = json.loads(response_text)
 
         # Retrieve classification from LLM response (fallback to defaults if empty/missing)
