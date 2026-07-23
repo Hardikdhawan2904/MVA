@@ -108,7 +108,7 @@ TEST_CASES = [
         "query": "Forecast underwriting result for next 6 months",
         "ml_readiness": 50.0,
         # "readiness score" was too literal a phrase to require -- the LLM
-        # narrator (esp. Azure gpt-4o) reliably explains the ML-readiness
+        # narrator reliably explains the ML-readiness
         # gate in its own words ("ML readiness being below the required
         # threshold") without using that exact two-word phrase. "readiness"
         # alone is still a genuine signal (the gate was mentioned at all)

@@ -188,7 +188,7 @@ tools:
     name: "Knowledge Update Tool"
     file: "app/services/tools/knowledge_update_service.py"
     class: "KnowledgeUpdateTool"
-    description: "Generates and validates new KPI definitions (via Groq -- not migrated to Azure OpenAI, unlike explanation_tool below; this is the one remaining Groq-only LLM call site in Agent 3) when a domain plugin's Rule Engine has a gap"
+    description: "Generates and validates new KPI definitions (via Groq) when a domain plugin's Rule Engine has a gap"
     triggers:
       - "when Rule Engine returns None for a resolved KPI name"
 
@@ -196,9 +196,9 @@ tools:
     name: "Explanation Tool"
     file: "app/services/tools/explanation_tool.py"
     class: "ExplanationTool"
-    description: "Converts EvidenceBuilder.to_narration_context() into business language, trying Azure OpenAI first (when AZURE_OPENAI_API_KEY/ENDPOINT/DEPLOYMENT are all set) then Groq -- unchanged narration/confidence-override logic since before the redesign, only its input shape and provider chain changed"
-    llm_provider: "Azure OpenAI (falls back to Groq)"
-    llm_model: "from AZURE_OPENAI_DEPLOYMENT, or llama-3.3-70b-versatile on the Groq path"
+    description: "Converts EvidenceBuilder.to_narration_context() into business language via Groq -- unchanged narration/confidence-override logic since before the redesign, only its input shape changed"
+    llm_provider: "Groq"
+    llm_model: "llama-3.3-70b-versatile"
     llm_temperature: 0.0
     fallback: "template_formatter (also renders multi-analysis 'report mode' — one section per analysis type)"
     triggers:
@@ -297,11 +297,11 @@ pipeline_stages:
     name: "narrate"
     module: "app/services/tools/explanation_tool.py"
     description: >
-      Unchanged Azure-OpenAI-first/Groq-fallback/template-formatter logic
-      — only its input shape changed (EvidenceBuilder.to_narration_context()
-      instead of a raw dict a handler assembled inline). The template
-      formatter also knows how to render "report mode"'s nested
-      multi-analysis shape, one section per analysis type.
+      Unchanged Groq/template-formatter logic — only its input shape
+      changed (EvidenceBuilder.to_narration_context() instead of a raw
+      dict a handler assembled inline). The template formatter also knows
+      how to render "report mode"'s nested multi-analysis shape, one
+      section per analysis type.
 
 analysis_type_categories:
   kpi_grounded:
@@ -420,17 +420,12 @@ execution_trace:
       breakdown_source: "Agent 2's ReadinessEngine (strengths/blocking_issues/evidence), forwarded by Agent-Orchestrator"
     llm_readiness:
       threshold: 75.0
-      # A passed gate whose LLM call(s) actually fail is reported distinctly
-      # ("Template Formatter (Azure + Groq failed)" or "Template Formatter
-      # (Groq failed, Azure not configured)") from a gate that never passed
-      # ("Template Formatter") -- and a genuine Azure OpenAI success is
-      # reported as exactly that ("Azure OpenAI"), never conflated with a
-      # failure just because it wasn't Groq specifically (a real bug, fixed:
-      # every non-"Groq" engine used to be reported as "the Groq call itself
-      # failed" even on a clean Azure success, which also made
-      # execution_summary.fallback_used wrongly true on every Azure
-      # success). ExplanationTool.last_engine_used is what makes all of
-      # this observable -- see _narration_trace_entry() in graph.py.
+      # A passed gate whose LLM call actually fails is reported distinctly
+      # ("Template Formatter (Groq error)") from a gate that never passed
+      # ("Template Formatter") -- and a genuine Groq success is reported
+      # as exactly that ("Groq"). ExplanationTool.last_engine_used is what
+      # makes all of this observable -- see _narration_trace_entry() in
+      # graph.py.
   model_versioning:
     source: "ml/model_registry.json"   # run metadata (last trained/run timestamps) — distinct from config/model_registry.yml, Stage 6's algorithm-selection catalog
     prophet: "refits every query — reported as last_run_at, never a fake training date"

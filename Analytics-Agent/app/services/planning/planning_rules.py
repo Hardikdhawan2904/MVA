@@ -75,6 +75,27 @@ def _propose(capability_profile: CapabilityProfile, analysis_type: str, target_c
 
 # ── Rules, most-specific first (dedup keeps the first occurrence) ──────────
 
+_USEFULNESS_ORDER = {"high": 0, "medium": 1, "low": 2}
+
+
+def _recommended_feature_columns(ctx: DatasetContext, rec: dict, target: str) -> list[str]:
+    """Pulls feature_recommendation's LLM-rated feature list, best-usefulness
+    -first, filtered to columns that structurally exist in this
+    DatasetContext (a stale/renamed name in the recommendation must not
+    crash the analyzer). Consumed by rule_target_column_driven so
+    ClassificationAnalyzer/RegressionAnalyzer/FeatureImportanceAnalyzer
+    (which all read target_columns[1:] as their feature set) actually
+    receive real features instead of just the bare target column."""
+    entries = rec.get("feature_columns") or []
+    named = [
+        (e.get("column"), _USEFULNESS_ORDER.get((e.get("usefulness") or "").lower(), 1))
+        for e in entries
+        if e.get("column") and e.get("column") != target and ctx.column(e.get("column")) is not None
+    ]
+    named.sort(key=lambda pair: pair[1])
+    return [name for name, _ in named]
+
+
 def rule_target_column_driven(
     ctx: DatasetContext, cp: CapabilityProfile, kpis: list[DiscoveredKPI], question_intent: QuestionIntent | None = None,
 ) -> list[PlannedAnalysis]:
@@ -83,11 +104,13 @@ def rule_target_column_driven(
     problem_type = rec.get("problem_type")
     if not target or problem_type not in ("classification", "regression"):
         return []
+    feature_cols = _recommended_feature_columns(ctx, rec, target)
+    target_columns = [target] + feature_cols
     out = []
-    p = _propose(cp, problem_type, [target], f"Target column '{target}' identified with problem_type='{problem_type}'", priority=1)
+    p = _propose(cp, problem_type, target_columns, f"Target column '{target}' identified with problem_type='{problem_type}'", priority=1)
     if p:
         out.append(p)
-    fi = _propose(cp, "feature_importance", [target], f"Explain what drives target column '{target}'", priority=1)
+    fi = _propose(cp, "feature_importance", target_columns, f"Explain what drives target column '{target}'", priority=1)
     if fi:
         out.append(fi)
     return out
@@ -166,16 +189,35 @@ def rule_temporal_metric(
     # [temporal, metric] — Stage 7's ForecastAnalyzer/TrendAnalyzer/
     # TimeSeriesAnalyzer all read target_columns[0] as the temporal column
     # and target_columns[1] as the metric to analyze (matching
-    # InsurancePlugin.enhance_plan()'s same convention); correlation/
-    # anomaly_detection don't care about column order, so this single
-    # ordering serves every analysis_type this rule proposes.
+    # InsurancePlugin.enhance_plan()'s same convention). correlation and
+    # anomaly_detection are different: CorrelationAnalyzer/AnomalyAnalyzer
+    # consume the WHOLE target_columns list as their feature set (not just
+    # positions 0/1) — confirmed by reading both analyzers — so extending
+    # this shared `cols` list for forecast's benefit would silently inject
+    # unwanted columns into those two. Only "forecast" gets an extended list.
     cols = [temporal[0].name, metric_name]
     rationale = f"Temporal column '{temporal[0].name}' + metric column '{metric_name}' present"
     out = []
-    for analysis_type, priority in [("trend", 2), ("forecast", 2), ("correlation", 3), ("anomaly_detection", 3), ("time_series_analysis", 2)]:
+    for analysis_type, priority in [("trend", 2), ("correlation", 3), ("anomaly_detection", 3), ("time_series_analysis", 2)]:
         p = _propose(cp, analysis_type, cols, rationale, priority)
         if p:
             out.append(p)
+
+    # forecast's XGBoost Regressor path reads target_columns[2:] as extra
+    # feature columns (ForecastAnalyzer's own documented convention) — only
+    # populate them from feature_recommendation.feature_columns when that
+    # recommendation's target_column IS this same metric (the LLM's feature
+    # picks are for predicting a specific target; using them for a
+    # different metric would be a category error, not a real improvement).
+    # Deterministic strategies and Prophet both ignore anything past index
+    # 1, so this is additive-only for the one path that reads it.
+    rec = ctx.feature_recommendation or {}
+    extra_features: list[str] = []
+    if rec.get("target_column") == metric_name:
+        extra_features = [c for c in _recommended_feature_columns(ctx, rec, metric_name) if c != temporal[0].name]
+    forecast_p = _propose(cp, "forecast", cols + extra_features, rationale, priority=2)
+    if forecast_p:
+        out.append(forecast_p)
     return out
 
 
@@ -203,10 +245,35 @@ def rule_dimension_metric(
     cols = [metric_name, dim_name]
     rationale = f"Categorical dimension '{dim_name}' + metric column '{metric_name}' present"
     out = []
-    for analysis_type, priority in [("clustering", 4), ("segmentation", 4), ("comparative_analysis", 4), ("ranking", 4)]:
+    for analysis_type, priority in [("comparative_analysis", 4), ("ranking", 4), ("distribution_analysis", 4)]:
         p = _propose(cp, analysis_type, cols, rationale, priority)
         if p:
             out.append(p)
+    # "clustering" deliberately excluded from the [metric, dim] pair above
+    # -- caught via live testing: clustering only registers cluster-on-
+    # features algorithms (K-Means) that treat the ENTIRE target_columns
+    # list as a purely-numeric feature set. Proposing [metric_name,
+    # dim_name] got K-Means selected with the categorical dimension in its
+    # feature set, and KMeans.fit_predict() raised "Input X contains NaN"
+    # (the dimension coerced to NaN via pd.to_numeric). rule_numeric_pair_
+    # no_target already proposes "clustering" correctly (two genuine
+    # metric columns) when the dataset supports it -- this rule doesn't
+    # need to duplicate that with the wrong column shape.
+    #
+    # "segmentation" is proposed separately below with target_columns=
+    # [metric_name] ONLY (no dim_name) -- it hit the exact same
+    # cluster-on-features crash as clustering when given the [metric, dim]
+    # pair (segmentation registers the same K-Means/DBSCAN/Hierarchical
+    # Clustering algorithms), but unlike clustering, no other rule
+    # proposes segmentation generically, and the single-metric convention
+    # is what its bin-a-single-metric deterministic strategies (Quantile/
+    # Equal-Width/Equal-Frequency Binning, and the Insurance domain
+    # plugin's preferred Combined Ratio Buckets strategy) actually expect
+    # -- confirmed live: dropping dim_name here is what makes the "Segment
+    # portfolio by risk profile" Insurance regression test pass again.
+    seg = _propose(cp, "segmentation", [metric_name], f"Metric column '{metric_name}' available to bin into segments", priority=4)
+    if seg:
+        out.append(seg)
     return out
 
 
@@ -238,10 +305,19 @@ def rule_two_categoricals(
     cols = [c.name for c in dims[:2]]
     rationale = f"{len(dims)} workable categorical columns"
     out = []
-    for analysis_type, priority in [("association_rules", 5), ("distribution_analysis", 5)]:
-        p = _propose(cp, analysis_type, cols, rationale, priority)
-        if p:
-            out.append(p)
+    # "distribution_analysis" deliberately excluded here -- caught via live
+    # testing: DistributionAnalyzer's own documented convention is
+    # [metric_col] or [metric_col, dimension_col] -- target_columns[0] MUST
+    # be numeric (DescriptiveDistributionStrategy does
+    # pd.to_numeric(df[metric_col], errors="coerce").dropna()). Proposing
+    # it here with [dim1, dim2] (two categorical columns, no metric at
+    # all) turned the metric column entirely to NaN and produced
+    # "Insufficient data for distribution analysis: 0 rows" every time.
+    # rule_dimension_metric already proposes it correctly with a real
+    # [metric, dimension] pair.
+    p = _propose(cp, "association_rules", cols, rationale, priority=5)
+    if p:
+        out.append(p)
     return out
 
 

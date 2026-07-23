@@ -19,10 +19,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import pytest
 
 from app.agents.analytics_agent.graph import (
-    _build_execution_trace, run_analytics_graph, _summarize_breakdown,
+    _build_execution_trace, _build_multi_analysis_trace, run_analytics_graph, _summarize_breakdown,
     _model_version_for_engine, _load_model_registry,
 )
 from app.config import ML_READINESS_THRESHOLD, LLM_READINESS_THRESHOLD
+from app.services.evidence.evidence_builder import Evidence
 
 _DATASET = Path(r"C:\Users\dhawa\mva\Schema-Intelligence-Layer\test_data\insurance_variance_data_native.csv")
 _REGISTRY = _load_model_registry()  # the real ml/model_registry.json — tests below assert against
@@ -131,38 +132,16 @@ def test_narration_groq_error_is_distinct_from_never_attempted():
         "intent": "show_kpi",
         "evidence": {"kpi": "x"},
         "response": "...",
-        "llm_engine_used": "Template Formatter (Azure + Groq failed)",
+        "llm_engine_used": "Template Formatter (Groq error)",
         "llm_readiness_score": 95.0,  # gate passed
     }
     trace, summary = _build_execution_trace(state, elapsed_seconds=0.2)
     narration = next(s for s in trace if s["step"] == "narration")
     assert narration["gate"]["passed"] is True
-    assert narration["engine"] == "Template Formatter (Azure + Groq failed)"
-    assert "LLM call(s) failed" in narration["reason"]
-    assert "Template Formatter (Azure + Groq failed)" in narration["reason"]
+    assert narration["engine"] == "Template Formatter (Groq error)"
+    assert "Groq call failed" in narration["reason"]
+    assert "Template Formatter (Groq error)" in narration["reason"]
     assert summary["fallback_used"] is True
-
-
-def test_narration_azure_success_is_not_mislabeled_as_groq_failure():
-    """Regression guard: before this fix, any llm_engine_used other than the
-    literal string "Groq" fell into the "Groq call itself failed" branch --
-    including "Azure OpenAI" on a clean success with zero fallback. Azure
-    succeeding must be reported as a success, not as a failure that never
-    happened."""
-    state = {
-        "intent": "show_kpi",
-        "evidence": {"kpi": "x"},
-        "response": "...",
-        "llm_engine_used": "Azure OpenAI",
-        "llm_readiness_score": 95.0,  # gate passed
-    }
-    trace, summary = _build_execution_trace(state, elapsed_seconds=0.2)
-    narration = next(s for s in trace if s["step"] == "narration")
-    assert narration["gate"]["passed"] is True
-    assert narration["engine"] == "Azure OpenAI"
-    assert "narrated by Azure OpenAI" in narration["reason"]
-    assert "failed" not in narration["reason"]
-    assert summary["fallback_used"] is False
 
 
 def test_narration_readiness_too_low_is_a_clean_never_attempted():
@@ -457,3 +436,46 @@ def test_analysis_response_defaults_trace_fields_to_none():
     resp = AnalysisResponse(status="error", query="q", response="r")
     assert resp.execution_trace is None
     assert resp.execution_summary is None
+
+
+# ── _build_multi_analysis_trace — ungated step gate must never be self-contradictory ──
+
+def test_multi_analysis_trace_ungated_step_gets_no_gate_object_even_above_threshold():
+    """Regression test for a bug caught via live testing: 'trend' has no
+    capability gate (deterministic-first by design), so its trace entry
+    must show gate=None -- never a fabricated {score, threshold,
+    passed: False} built from the CURRENT ml_readiness_score, which is
+    self-contradictory whenever that score is actually above threshold
+    (e.g. score=76.1, threshold=75, passed=False -- exactly what a live
+    /pipeline/run response showed before this fix)."""
+    final_state = {
+        "ml_readiness_score": 76.1,
+        "ml_readiness_breakdown": {"assessment_type": "ml_readiness", "score": 76.1},
+        "llm_engine_used": "Groq",
+        "llm_readiness_score": 94.24,
+        "llm_readiness_breakdown": {"assessment_type": "llm_readiness", "score": 94.24},
+        "tools_used": ["RuleEngine", "SQLTool", "AnalyticsTool", "MLTool→Prophet", "ExplanationTool"],
+        "question_intent": None,
+    }
+    trend_evidence = Evidence(
+        evidence={"trend_slope": 1.2},
+        fallback_metadata={
+            "ml_readiness_blocked": False,
+            "fallback_reason": "'trend' has no ML-capable algorithm registered — deterministic by design",
+            "fallback_applied": "Trend (linear regression over time)",
+        },
+    )
+    forecast_evidence = Evidence(
+        evidence={"forecast": []},
+        model_metadata={"algorithm": "Prophet", "cost_tier": "expensive"},
+        confidence=0.761,
+    )
+    entries = [("trend", "TrendAnalyzer", trend_evidence), ("forecast", "ForecastAnalyzer", forecast_evidence)]
+
+    trace, summary = _build_multi_analysis_trace(final_state, entries, elapsed_seconds=28.2, node_durations_ms=None)
+
+    trend_entry = next(e for e in trace if e["step"] == "trend")
+    forecast_entry = next(e for e in trace if e["step"] == "forecast")
+    assert trend_entry["gate"] is None
+    assert forecast_entry["gate"]["passed"] is True
+    assert forecast_entry["gate"]["score"] == 76.1

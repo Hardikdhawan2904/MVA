@@ -18,6 +18,16 @@ class AlgorithmRequirements:
     requires_datetime: bool = False
     requires_target: bool = False
     supports_categorical: bool = False
+    # How many target_columns this algorithm needs to run at all -- e.g.
+    # K-Means/DBSCAN/Hierarchical Clustering treat the entire target_columns
+    # list as their numeric feature matrix and need >= 2 to cluster on.
+    # Caught via live testing: segmentation's target_columns is correctly
+    # just [metric_col] for its single-metric-binning deterministic
+    # strategies, but K-Means still got selected first (nothing filtered
+    # it out) and then failed its own internal "needs >= 2" check at
+    # execution time -- a wasted ML slot producing empty evidence instead
+    # of falling through to a deterministic strategy that could actually run.
+    min_feature_columns: int = 1
 
 
 @dataclass
@@ -44,6 +54,7 @@ class AlgorithmSpec:
                 requires_datetime=bool(req.get("requires_datetime", False)),
                 requires_target=bool(req.get("requires_target", False)),
                 supports_categorical=bool(req.get("supports_categorical", False)),
+                min_feature_columns=int(req.get("min_feature_columns", 1)),
             ),
             inputs=list(d.get("inputs", [])),
             outputs=list(d.get("outputs", [])),

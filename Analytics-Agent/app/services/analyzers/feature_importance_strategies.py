@@ -63,9 +63,26 @@ class CorrelationBasedImportanceStrategy:
     importance — cheap, deterministic, target must be numeric."""
 
     def compute(self, df: pd.DataFrame, target_col: str, feature_cols: list[str]) -> dict:
-        cols = [c for c in feature_cols if c in df.columns]
-        if not cols or target_col not in df.columns:
-            return {"error": f"Feature importance target/feature columns not found: target={target_col!r}, features={cols}"}
+        if target_col not in df.columns:
+            return {"error": f"Feature importance target column not found: {target_col!r}"}
+
+        # Filter to columns that actually parse as numeric before the
+        # correlation step -- caught via live testing: blindly coercing
+        # every feature_cols entry (including genuinely categorical ones,
+        # e.g. a region/status dimension recommended alongside real
+        # numeric features) turns a categorical column entirely to NaN,
+        # and dropna() then wipes out EVERY row because of that one
+        # column, regardless of how many rows the numeric columns
+        # actually had valid data for. A column is kept only if most of
+        # its values genuinely parse as numeric -- handles genuinely
+        # numeric columns stored as strings (common upstream) without
+        # keeping columns that are mostly text.
+        cols = [
+            c for c in feature_cols
+            if c in df.columns and pd.to_numeric(df[c], errors="coerce").notna().mean() >= 0.5
+        ]
+        if not cols:
+            return {"error": f"No numeric feature columns available for Correlation-Based Importance (candidates: {feature_cols})"}
 
         data = df[cols + [target_col]].apply(pd.to_numeric, errors="coerce").dropna()
         if len(data) < 5:

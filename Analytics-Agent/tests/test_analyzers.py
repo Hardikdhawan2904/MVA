@@ -205,6 +205,21 @@ def test_execute_deterministic_path_flags_ml_readiness_blocked_when_execution_ga
     assert result.fallback_metadata["ml_readiness_blocked"] is True
 
 
+def test_execute_deterministic_path_does_not_flag_blocked_for_ungated_analysis_types():
+    """Regression test for a bug caught via live testing: an ungated
+    analysis type (trend) previously reused the same "...execution gate
+    did not..." reason text as a genuine gate failure, so this exact
+    substring match made ml_readiness_blocked come out True for it even
+    though no gate was ever evaluated -- graph.py then rendered a
+    self-contradictory gate (score above threshold, passed=False). The
+    ModelSelector fix (model_selector.py) gives ungated types distinct
+    wording; this confirms ml_readiness_blocked correctly stays False for it."""
+    analyzer = _StubAnalyzer({"evidence": {"trend_slope": 1.2}})
+    selected = SelectedModel(algorithm="Trend (linear regression over time)", implementation_class="app.services.tools.analytics_tool.AnalyticsTool", requires_ml=False, cost_tier="cheap", reasons=["'trend' has no ML-capable algorithm registered — deterministic by design"])
+    result = analyzer.execute(pd.DataFrame(), _fixture_context(_fixture_df()), _scheduled("stub", []), selected)
+    assert result.fallback_metadata["ml_readiness_blocked"] is False
+
+
 # ── AnalyzerRegistry completeness ────────────────────────────────────────────
 
 def test_analyzer_registry_covers_every_enabled_registry_purpose():
@@ -243,6 +258,65 @@ def test_forecast_missing_target_columns_produces_no_evidence():
     ev = ForecastAnalyzer().execute(df, ctx, _scheduled("forecast", ["order_date", "nonexistent_col"]), selected)
     assert ev.evidence == {}
     assert any("not found" in r for r in ev.reasons)
+
+
+def test_forecast_prophet_steps_by_the_datas_actual_daily_granularity():
+    """Regression test for a bug caught via live testing: Prophet was
+    always called with its hardcoded freq="ME" default, so a genuinely
+    daily-granularity dataset (retail_sales_daily.csv, business question
+    "next 30 days") silently got 6 *monthly* forecast points instead of
+    daily ones -- the narration then correctly reported the 30-day
+    forecast as "unavailable" even though Prophet evidence was sitting
+    right there, just at the wrong granularity. Prophet must infer freq
+    from the input series the same way the deterministic strategies
+    already infer their step, not hardcode monthly."""
+    df, ctx = _fixture_df(), _fixture_context(_fixture_df())  # daily order_date, freq="D"
+    selected = _model_for("forecast", "Prophet")
+    ev = ForecastAnalyzer().execute(df, ctx, _scheduled("forecast", ["order_date", "revenue"]), selected)
+    assert ev.evidence["model"] == "Prophet"
+    forecast_dates = [pd.Timestamp(p["ds"]) for p in ev.evidence["forecast"]]
+    assert len(forecast_dates) == 6
+    gaps_days = [(b - a).days for a, b in zip(forecast_dates, forecast_dates[1:])]
+    # Monthly-step forecasting (the bug) would produce ~28-31 day gaps;
+    # daily-step forecasting (the fix) must produce 1-day gaps.
+    assert all(g == 1 for g in gaps_days), f"expected daily-step forecast, got gaps: {gaps_days}"
+
+
+def test_forecast_xgboost_regressor_handles_categorical_feature_columns():
+    """Regression test for a bug caught via live testing: LightGBMForecaster.
+    fit_and_predict() converted categorical feature columns to category
+    dtype FIRST, then tried to .fillna("Unknown") on them in a second pass
+    -- pandas raises "Cannot setitem on a Categorical with a new category"
+    unconditionally when the fill value isn't already one of the column's
+    real categories, so ANY categorical feature column crashed this path
+    every time, regardless of whether it actually had nulls. This was
+    unreachable via the planner before rule_temporal_metric started
+    including feature_recommendation's recommended feature columns for
+    forecast (a separate fix, same session) -- confirmed live once a
+    categorical feature ('region') was actually passed through."""
+    df, ctx = _fixture_df(), _fixture_context(_fixture_df())
+    selected = _model_for("forecast", "XGBoost Regressor")
+    ev = ForecastAnalyzer().execute(
+        df, ctx, _scheduled("forecast", ["order_date", "revenue", "cost", "region"]), selected, ml_confidence=0.9,
+    )
+    assert ev.evidence.get("model") == "LightGBM"
+    assert "r2_score" in ev.evidence
+    assert not any("failed" in r.lower() for r in ev.reasons)
+
+
+def test_infer_pandas_freq_maps_median_gap_to_the_right_alias():
+    from app.services.analyzers._dataset_helpers import infer_pandas_freq
+
+    daily = pd.DataFrame({"ds": pd.date_range("2024-01-01", periods=10, freq="D"), "y": range(10)})
+    weekly = pd.DataFrame({"ds": pd.date_range("2024-01-01", periods=10, freq="7D"), "y": range(10)})
+    monthly = pd.DataFrame({"ds": pd.date_range("2024-01-01", periods=10, freq="ME"), "y": range(10)})
+    quarterly = pd.DataFrame({"ds": pd.date_range("2024-01-01", periods=6, freq="QE"), "y": range(6)})
+
+    assert infer_pandas_freq(daily) == "D"
+    assert infer_pandas_freq(weekly) == "W"
+    assert infer_pandas_freq(monthly) == "ME"
+    assert infer_pandas_freq(quarterly) == "QE"
+    assert infer_pandas_freq(pd.DataFrame({"ds": [], "y": []})) == "ME"  # too little data -> default
 
 
 # ── Trend / Ranking / Comparative (AnalyticsTool wrappers) ─────────────────
@@ -430,6 +504,26 @@ def test_feature_importance_correlation_based():
     selected = _model_for("feature_importance", "Correlation-Based Importance")
     ev = FeatureImportanceAnalyzer().execute(df, ctx, _scheduled("feature_importance", ["revenue", "cost"]), selected)
     assert ev.evidence["feature_contributions"][0]["feature"] == "cost"
+
+
+def test_feature_importance_correlation_based_excludes_categorical_features_without_losing_rows():
+    """Regression test for a bug caught via live testing: the strategy
+    coerced every feature_cols entry to numeric (including genuinely
+    categorical columns like region/status), which turns a categorical
+    column entirely to NaN -- then dropna() wiped out EVERY row because
+    of that one column, regardless of how much valid numeric data the
+    other columns had. Reproduced live: a 300-row dataset with 2 numeric
+    + 2 categorical recommended features produced "Insufficient rows...0
+    (need >= 5)". Categorical columns must be excluded from the
+    correlation itself, not used to zero out every row."""
+    df, ctx = _fixture_df(), _fixture_context(_fixture_df())
+    selected = _model_for("feature_importance", "Correlation-Based Importance")
+    ev = FeatureImportanceAnalyzer().execute(
+        df, ctx, _scheduled("feature_importance", ["revenue", "cost", "region", "status"]), selected,
+    )
+    assert ev.evidence.get("rows_used") == len(df)
+    contributed_features = {c["feature"] for c in ev.evidence["feature_contributions"]}
+    assert contributed_features == {"cost"}  # region/status excluded, order_id/order_date not passed
 
 
 # ── Distribution / Time Series / Association ────────────────────────────────

@@ -14,7 +14,7 @@ from typing import Any
 
 import pandas as pd
 
-from app.services.analyzers._dataset_helpers import build_time_series, categorical_columns, numeric_columns
+from app.services.analyzers._dataset_helpers import build_time_series, categorical_columns, infer_pandas_freq, numeric_columns
 from app.services.analyzers.base import Analyzer, import_class
 from app.services.dataset_context.models import DatasetContext
 from app.services.models_registry.model_selector import SelectedModel
@@ -43,14 +43,23 @@ class ForecastAnalyzer(Analyzer):
 
         if algorithm == "Prophet":
             ts_df = build_time_series(df, temporal_col, metric_col)
-            result = strategy_cls().fit_and_forecast(ts_df, periods=6)
+            freq = infer_pandas_freq(ts_df)
+            result = strategy_cls().fit_and_forecast(ts_df, periods=6, freq=freq)
             return {"error": result["error"]} if "error" in result else {"evidence": result}
 
         if algorithm == "XGBoost Regressor":
             feature_cols = target_columns[2:] or [
                 c for c in numeric_columns(dataset_context, exclude={metric_col}) if c in df.columns
             ]
-            cat_cols = [c for c in categorical_columns(dataset_context) if c in df.columns]
+            # Must intersect with feature_cols, not just "every categorical
+            # column in the dataset" -- LightGBM's categorical_feature
+            # param has to name columns actually present in X, or it raises
+            # "Wrong type(str) or unknown name(...) in categorical_feature".
+            # Confirmed live once feature_cols became a real, partial list
+            # (from feature_recommendation) instead of always being every
+            # numeric column in the dataset (which never overlapped with a
+            # categorical column, so this bug had nothing to expose it).
+            cat_cols = [c for c in categorical_columns(dataset_context) if c in feature_cols]
             result = strategy_cls().fit_and_predict(
                 df, target_col=metric_col, feature_cols=feature_cols, categorical_cols=cat_cols,
             )

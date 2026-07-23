@@ -1,6 +1,6 @@
 # Analytics Agent (Agent 3)
 
-A domain-agnostic, dataset-driven analytics engine — resolves what's analytically possible on an uploaded dataset, discovers KPIs, plans and schedules analyses within a budget, selects an ML or deterministic algorithm per analysis, executes it, and narrates the evidence in business language (Azure OpenAI first when configured, falling back to Groq, then a deterministic template formatter if both are unavailable/rate-limited or `llm_readiness` is below threshold).
+A domain-agnostic, dataset-driven analytics engine — resolves what's analytically possible on an uploaded dataset, discovers KPIs, plans and schedules analyses within a budget, selects an ML or deterministic algorithm per analysis, executes it, and narrates the evidence in business language (Groq, falling back to a deterministic template formatter if unavailable/rate-limited or `llm_readiness` is below threshold).
 
 Insurance is the **reference domain** — a fully-built `DomainPlugin` (`app/services/domain_plugins/insurance/`) with a curated KPI catalog (Gross Written Premium, Loss Ratio, Combined Ratio, Underwriting Result, ...), 14 pre-computed variance drivers, and 18 business rules, all preserved byte-identical through the redesign below. A dataset with no matching plugin runs through the exact same pipeline with an empty KPI catalog (`GenericDomainPlugin`) instead of inheriting any of Insurance's assumptions — confirmed working end-to-end against non-Insurance fixtures (HR payroll, finance, payments).
 
@@ -42,8 +42,7 @@ POST /analyze (file + business_question + conversation_id + ml_readiness + llm_r
   Stage 8  (EvidenceBuilder)         — one Evidence per analysis; flattens to the old flat
                                         shape for a single analysis, nests under
                                         analyses[type] for multi-analysis "report mode"
-  Stage 9  narrate                   — Azure OpenAI first (when configured), then Groq,
-                                        then a deterministic template formatter —
+  Stage 9  narrate                   — Groq, then a deterministic template formatter —
                                         unchanged logic, only its input shape changed
   record_memory                      — sliding-window conversation history, persisted to
                                         Postgres by conversation_id
@@ -83,16 +82,16 @@ A thin `app/main.py`/`app/routes/analyze.py` shell over a LangGraph `StateGraph`
   "execution_trace": [
     {"step": "intent_detection", "engine": null, "gate": null, "reason": "Detected intent='forecast', kpi='underwriting_result'", "duration_ms": 4.6},
     {"step": "forecast", "engine": "Prophet", "gate": {"name": "ml_readiness", "score": 82.0, "threshold": 75.0, "passed": true, "breakdown": {"evidence": [{"dimension": "feature_coverage", "value": 0.96}], "strengths": [], "blocking_issues": []}}, "reason": "ML readiness (82.0%) met the 75.0% threshold — using the trained Prophet model. Strongest/only factor: feature_coverage (96%).", "duration_ms": 360.3, "model_version": {"refit_per_query": true, "last_run_at": "2026-07-17T22:24:02"}},
-    {"step": "narration", "engine": "Azure OpenAI", "gate": {"name": "llm_readiness", "score": 95.77, "threshold": 75.0, "passed": true, "breakdown": null}, "reason": "LLM readiness (95.8%) met the 75.0% threshold — narrated by Azure OpenAI.", "duration_ms": 270.7}
+    {"step": "narration", "engine": "Groq", "gate": {"name": "llm_readiness", "score": 95.77, "threshold": 75.0, "passed": true, "breakdown": null}, "reason": "LLM readiness (95.8%) met the 75.0% threshold — narrated by Groq.", "duration_ms": 270.7}
   ],
   "execution_summary": {
     "intent": "forecast", "tools_used": ["RuleEngine", "SQLTool", "Prophet", "ExplanationTool"],
-    "ml_engine": "Prophet", "narration_engine": "Azure OpenAI", "execution_time_seconds": 0.663, "fallback_used": false
+    "ml_engine": "Prophet", "narration_engine": "Groq", "execution_time_seconds": 0.663, "fallback_used": false
   }
 }
 ```
 
-`narration_engine`/the narration step's `engine` is `"Azure OpenAI"` or `"Groq"` on a real LLM narration, or `"Template Formatter"` / `"Template Formatter (Azure + Groq failed)"` / `"Template Formatter (Groq failed, Azure not configured)"` on the deterministic fallback (`ExplanationTool` in `app/services/tools/explanation_tool.py`) — `fallback_used` is only ever `true` because of a genuine ML-readiness gate miss or a narration fallback, never because Azure specifically was used instead of Groq (both count as success).
+`narration_engine`/the narration step's `engine` is `"Groq"` on a real LLM narration, or `"Template Formatter"` / `"Template Formatter (Groq error)"` on the deterministic fallback (`ExplanationTool` in `app/services/tools/explanation_tool.py`) — `fallback_used` is only ever `true` because of a genuine ML-readiness gate miss or a narration fallback.
 
 `execution_trace`/`execution_summary` are built once from the LangGraph run's final state — `null` on `status: "error"` rather than fabricating an explanation for a genuine crash. One step per scheduled analysis: a curated-KPI query (`kpi_summary`/`kpi_variance`/`root_cause`/`trend`/`forecast`) or a keyword-narrowed generic query schedules exactly one, so `execution_trace` looks exactly like the example above; a bare/generic `business_question` against a dataset with no matching curated KPI runs **report mode** — one step per scheduled analysis (up to the budget), `execution_summary.intent` is `"report"`, and `response` has one narrated section per analysis type. `gate.breakdown` is `null` when the caller didn't supply `ml_readiness_breakdown`/`llm_readiness_breakdown`. `model_version` only appears on an ML-gated step that actually ran a model — never on the deterministic-fallback path. `duration_ms` on every step is real per-node wall-clock time from `graph.stream()`.
 
@@ -118,8 +117,7 @@ python -m venv venv
 pip install -r requirements.txt -r requirements-dev.txt
 cd Analytics-Agent
 
-# Copy env file and add your Groq API key (and, optionally, AZURE_OPENAI_* to
-# prefer Azure OpenAI for narration — see Environment Variables below)
+# Copy env file and add your Groq API key
 cp .env.example .env
 
 ..\venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8003
@@ -138,12 +136,11 @@ Reads the dataset from `DATASET_PATH` (see Environment Variables) instead of an 
 
 ## Environment Variables
 
-`GROQ_API_KEY`, `AZURE_OPENAI_API_KEY`/`AZURE_OPENAI_ENDPOINT`/`AZURE_OPENAI_DEPLOYMENT`, and the `POSTGRES_*` connection details default from the shared **repo-root** `.env` (`../.env`) now — see the [root README](../README.md#quick-start). This service's own `.env` only needs to set them if overriding the shared value specifically for Agent 3.
+`GROQ_API_KEY` and the `POSTGRES_*` connection details default from the shared **repo-root** `.env` (`../.env`) now — see the [root README](../README.md#quick-start). This service's own `.env` only needs to set them if overriding the shared value specifically for Agent 3.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| AZURE_OPENAI_API_KEY / AZURE_OPENAI_ENDPOINT / AZURE_OPENAI_DEPLOYMENT *(root `.env`)* | *(empty)* | Optional. When all three are set, `ExplanationTool._call_llm()` tries Azure OpenAI first for narration, before Groq — see `_call_azure_openai` in `app/services/tools/explanation_tool.py`. Never required, only preferred. |
-| GROQ_API_KEY *(root `.env`)* | *(empty)* | Groq API key — used as the fallback when Azure is configured, or the primary path when it isn't. Narration falls back further to a deterministic template formatter if both are unset/unreachable/rate-limited. |
+| GROQ_API_KEY *(root `.env`)* | *(empty)* | Groq API key — used for narration. Falls back to a deterministic template formatter if unset/unreachable/rate-limited. |
 | HOST | 0.0.0.0 | Bind host. |
 | PORT | 8003 | Bind port. |
 | DATASET_PATH | *(colleague's original Mac path)* | **Local testing only** — used by `scripts/cli.py` and `train.py`. Has no effect on `POST /analyze`, which always uses the uploaded file. |
@@ -171,7 +168,7 @@ Trains Prophet-free LightGBM, IsolationForest, XGBoost, and K-Means against `DAT
 ..\venv\Scripts\python.exe -m pytest tests/ -v
 ```
 
-19 files, 304 tests. Covers every stage of the pipeline above: capability resolution, KPI discovery, question interpretation, planning, scheduling, the model registry/selector, all 16 analyzers (+ the 2 curated-KPI analyzers), the domain plugin system (including a byte-for-byte check that the Insurance plugin's copied config files match the originals), the evidence builder, LangGraph routing, the execution trace/summary builder, Postgres-backed conversation memory (against the real shared instance), and a 12-case end-to-end harness exercising every curated-KPI query shape (real Azure-OpenAI-first-then-Groq calls when configured — slower and occasionally rate-limit-prone on the Groq path, but confirms the whole path works, not just its parts).
+19 files, 304 tests. Covers every stage of the pipeline above: capability resolution, KPI discovery, question interpretation, planning, scheduling, the model registry/selector, all 16 analyzers (+ the 2 curated-KPI analyzers), the domain plugin system (including a byte-for-byte check that the Insurance plugin's copied config files match the originals), the evidence builder, LangGraph routing, the execution trace/summary builder, Postgres-backed conversation memory (against the real shared instance), and a 12-case end-to-end harness exercising every curated-KPI query shape (real Groq calls — slower and occasionally rate-limit-prone, but confirms the whole path works, not just its parts).
 
 ## Known Limitations
 

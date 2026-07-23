@@ -144,18 +144,6 @@ GROQ_MODEL       = LLM_FALLBACK.get("model", "llama-3.3-70b-versatile")
 GROQ_TEMPERATURE = 0.0
 GROQ_MAX_TOKENS  = 1024
 
-# ── Azure OpenAI (optional, tried before Groq) ──────────────────────────────────
-# Second LLM provider, attempted first in ExplanationTool._call_groq() when
-# configured -- Groq (and its own existing template-formatter fallback) is
-# untouched and still used whenever this is unset or the Azure call fails.
-# AZURE_OPENAI_DEPLOYMENT is a deployment name, not a model name -- Azure
-# OpenAI requires deploying a specific model under a caller-chosen name
-# before it's callable; the deployment name stands in for "model" in the
-# request body.
-AZURE_OPENAI_API_KEY     = os.getenv("AZURE_OPENAI_API_KEY", "")
-AZURE_OPENAI_ENDPOINT    = os.getenv("AZURE_OPENAI_ENDPOINT", "")
-AZURE_OPENAI_DEPLOYMENT  = os.getenv("AZURE_OPENAI_DEPLOYMENT", "")
-
 # ── ML Runtime Settings ───────────────────────────────────────────────────────
 ANOMALY_CONTAMINATION = float(
     ISO_FOREST_CFG.get("hyperparameters", {}).get("contamination", 0.05)

@@ -232,15 +232,22 @@ class LightGBMForecaster:
         df_model[target_col] = pd.to_numeric(df_model[target_col], errors="coerce")
         df_model = df_model.dropna(subset=[target_col])
 
-        # Encode categoricals as category dtype (LightGBM requirement)
+        # Encode categoricals as category dtype (LightGBM requirement). NaN
+        # must be filled BEFORE the category conversion, not after -- a
+        # pandas Categorical can only be filled with a value that's already
+        # one of its categories, so filling post-conversion with "Unknown"
+        # (never one of the column's real values) raises "Cannot setitem on
+        # a Categorical with a new category" unconditionally, regardless of
+        # whether the column even has any NaN to fill.
         cat_cols = categorical_cols or []
         for col in cat_cols:
             if col in df_model.columns:
-                df_model[col] = df_model[col].astype("category")
+                df_model[col] = df_model[col].fillna("Unknown").astype("category")
 
-        # Fill remaining NaN with median
+        # Fill remaining NaN with median -- numeric feature columns not
+        # already handled as categoricals above.
         for col in feature_cols:
-            if col in df_model.columns:
+            if col in df_model.columns and col not in cat_cols:
                 if df_model[col].dtype.kind in "biufc":
                     df_model[col] = df_model[col].fillna(df_model[col].median())
                 else:

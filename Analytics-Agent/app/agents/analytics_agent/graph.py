@@ -230,16 +230,12 @@ def _narration_trace_entry(final_state: dict) -> dict | None:
         "name": "llm_readiness", "score": llm_score, "threshold": LLM_READINESS_THRESHOLD,
         "passed": llm_passed, "breakdown": llm_breakdown,
     }
-    if llm_engine in ("Groq", "Azure OpenAI"):
+    if llm_engine == "Groq":
         reason = (f"LLM readiness ({llm_score:.1f}%) met the {LLM_READINESS_THRESHOLD}% "
                   f"threshold — narrated by {llm_engine}.")
     elif llm_passed:
-        # llm_engine is one of explanation_tool.py's "Template Formatter (...)"
-        # failure labels here (e.g. "Template Formatter (Azure + Groq failed)") —
-        # embed it verbatim rather than hardcoding which provider failed, since
-        # it could be either or both.
         reason = (f"LLM readiness ({llm_score:.1f}%) met the {LLM_READINESS_THRESHOLD}% threshold, "
-                  f"but the LLM call(s) failed ({llm_engine}) — fell back to the template formatter.")
+                  f"but the Groq call failed ({llm_engine}) — fell back to the template formatter.")
     else:
         reason = (f"LLM readiness ({llm_score:.1f}%) below the {LLM_READINESS_THRESHOLD}% "
                   f"threshold — used the template formatter instead of Groq.")
@@ -320,7 +316,7 @@ def _build_multi_analysis_trace(
         "narration_engine": llm_engine_used,
         "execution_time_seconds": round(elapsed_seconds, 3),
         "fallback_used": bool(
-            any_ml_blocked or (llm_engine_used is not None and llm_engine_used not in ("Groq", "Azure OpenAI"))
+            any_ml_blocked or (llm_engine_used is not None and llm_engine_used != "Groq")
         ),
     }
     return trace, summary
@@ -431,7 +427,7 @@ def _build_execution_trace(
         "execution_time_seconds": round(elapsed_seconds, 3),
         "fallback_used": bool(
             (evidence is not None and intent in _ML_GATED_ENGINES and evidence.get("ml_readiness_blocked", False))
-            or (llm_engine_used is not None and llm_engine_used not in ("Groq", "Azure OpenAI"))
+            or (llm_engine_used is not None and llm_engine_used != "Groq")
         ),
     }
     return trace, summary

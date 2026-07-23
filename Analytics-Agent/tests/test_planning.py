@@ -49,6 +49,57 @@ def test_target_column_present_plans_classification_or_regression_plus_feature_i
     assert "regression" not in types
 
 
+def test_target_column_driven_plan_includes_llm_recommended_features_in_usefulness_order():
+    """Regression test for a bug caught via live testing: rule_target_column_driven
+    used to propose target_columns=[target] only, dropping
+    feature_recommendation's feature_columns (the LLM's usefulness-rated
+    feature list) entirely. ClassificationAnalyzer/RegressionAnalyzer/
+    FeatureImportanceAnalyzer all read target_columns[1:] as their feature
+    set, so they silently received zero features and produced no evidence
+    -- reproduced live: 'Insufficient labelled rows: 0' / 'requires
+    target_columns=[target_col, feature_col, ...]'. Best-usefulness-first
+    ordering and stale-column filtering are both exercised here."""
+    ctx = DatasetContext(
+        row_count=100, column_count=4,
+        columns=[
+            ColumnContext(name="churned", semantic_role="metric"),
+            ColumnContext(name="revenue", semantic_role="metric"),
+            ColumnContext(name="cost", semantic_role="metric"),
+            ColumnContext(name="region", semantic_role="dimension"),
+        ],
+        context_source="local_fallback",
+        feature_recommendation={
+            "target_column": "churned",
+            "problem_type": "classification",
+            "feature_columns": [
+                {"column": "cost", "usefulness": "medium"},
+                {"column": "revenue", "usefulness": "high"},
+                {"column": "region", "usefulness": "low"},
+                {"column": "no_longer_in_dataset", "usefulness": "high"},  # stale name -- must not crash or appear
+            ],
+        },
+    )
+    plan = AnalyticsPlanner().plan(ctx, _all_possible_profile(), [])
+    classification = next(p for p in plan if p.analysis_type == "classification")
+    feature_importance = next(p for p in plan if p.analysis_type == "feature_importance")
+
+    assert classification.target_columns == ["churned", "revenue", "cost", "region"]
+    assert feature_importance.target_columns == ["churned", "revenue", "cost", "region"]
+    assert "no_longer_in_dataset" not in classification.target_columns
+
+
+def test_target_column_driven_plan_with_no_feature_columns_falls_back_to_bare_target():
+    ctx = DatasetContext(
+        row_count=100, column_count=1,
+        columns=[ColumnContext(name="churned", semantic_role="metric")],
+        context_source="local_fallback",
+        feature_recommendation={"target_column": "churned", "problem_type": "classification"},
+    )
+    plan = AnalyticsPlanner().plan(ctx, _all_possible_profile(), [])
+    classification = next(p for p in plan if p.analysis_type == "classification")
+    assert classification.target_columns == ["churned"]
+
+
 def test_kpi_grounded_root_cause_always_proposed_when_kpi_exists():
     ctx = DatasetContext(row_count=100, column_count=1, columns=[], context_source="local_fallback")
     kpi = DiscoveredKPI(name="Profit Margin", formula="x", source_columns=["revenue", "cost"], semantic_basis="", category=FINANCIAL_MEASURE, kpi_type="ratio")
@@ -68,6 +119,91 @@ def test_no_kpi_no_root_cause_proposed():
     ctx = DatasetContext(row_count=100, column_count=1, columns=[], context_source="local_fallback")
     plan = AnalyticsPlanner().plan(ctx, _all_possible_profile(), [])
     assert not any(p.analysis_type == "root_cause" for p in plan)
+
+
+def test_dimension_metric_pair_no_longer_proposes_clustering_and_segmentation_drops_the_dimension():
+    """Regression test for a bug caught via live testing: rule_dimension_metric
+    used to propose "clustering" AND "segmentation" with
+    target_columns=[metric_name, dim_name] -- both purposes register
+    cluster-on-features algorithms (clustering: K-Means; segmentation:
+    K-Means/DBSCAN/Hierarchical Clustering) that treat the entire
+    target_columns list as a purely-numeric feature set, so one of those
+    got selected with the categorical dimension in its feature set and
+    KMeans.fit_predict() raised "Input X contains NaN" at execution time --
+    reproduced live for both purposes.
+
+    clustering is dropped entirely from this rule (rule_numeric_pair_
+    no_target already proposes it correctly with two real metrics).
+    segmentation is kept but with target_columns=[metric_name] only --
+    single-metric binning is what its deterministic strategies actually
+    expect, and no other rule proposes segmentation generically (dropping
+    it entirely broke the real "Segment portfolio by risk profile"
+    Insurance end-to-end test -- confirmed by running it)."""
+    ctx = DatasetContext(
+        row_count=100, column_count=2,
+        columns=[
+            ColumnContext(name="revenue", semantic_role="metric", cardinality_ratio=0.9),
+            ColumnContext(name="region", semantic_role="dimension", cardinality_ratio=0.05),
+        ],
+        context_source="local_fallback",
+    )
+    plan = AnalyticsPlanner().plan(ctx, _all_possible_profile(), [])
+    types = {p.analysis_type for p in plan}
+    assert "clustering" not in types
+    assert "comparative_analysis" in types
+    assert "ranking" in types
+
+    segmentation = next(p for p in plan if p.analysis_type == "segmentation")
+    assert segmentation.target_columns == ["revenue"]
+
+
+def test_two_metrics_plus_dimension_still_gets_correct_clustering_via_numeric_pair_rule():
+    """Companion to the test above: when >= 2 real metric columns exist,
+    rule_numeric_pair_no_target still correctly proposes "clustering" with
+    a purely-numeric pair -- clustering isn't silently lost, it's produced
+    by the rule that was always structurally correct for it."""
+    ctx = DatasetContext(
+        row_count=100, column_count=3,
+        columns=[
+            ColumnContext(name="revenue", semantic_role="metric", cardinality_ratio=0.9),
+            ColumnContext(name="cost", semantic_role="metric", cardinality_ratio=0.9),
+            ColumnContext(name="region", semantic_role="dimension", cardinality_ratio=0.05),
+        ],
+        context_source="local_fallback",
+    )
+    plan = AnalyticsPlanner().plan(ctx, _all_possible_profile(), [])
+    clustering = next(p for p in plan if p.analysis_type == "clustering")
+    assert clustering.target_columns == ["revenue", "cost"]
+    assert "region" not in clustering.target_columns
+
+
+def test_distribution_analysis_gets_a_real_metric_not_two_categoricals():
+    """Regression test for a bug caught via live testing:
+    rule_two_categoricals proposed "distribution_analysis" with
+    target_columns=[dim1, dim2] -- two categorical columns, no metric at
+    all -- but DistributionAnalyzer's own documented convention is
+    [metric_col] or [metric_col, dimension_col]; target_columns[0] MUST
+    be numeric (DescriptiveDistributionStrategy does
+    pd.to_numeric(..., errors="coerce").dropna() on it). Feeding it a
+    categorical column turned the "metric" entirely to NaN and produced
+    "Insufficient data for distribution analysis: 0 rows" every time.
+    rule_dimension_metric (which already has a real metric+dimension pair
+    in scope) proposes it now instead."""
+    ctx = DatasetContext(
+        row_count=100, column_count=3,
+        columns=[
+            ColumnContext(name="revenue", semantic_role="metric", cardinality_ratio=0.9),
+            ColumnContext(name="region", semantic_role="dimension", cardinality_ratio=0.02),
+            ColumnContext(name="segment", semantic_role="dimension", cardinality_ratio=0.015),
+        ],
+        context_source="local_fallback",
+    )
+    plan = AnalyticsPlanner().plan(ctx, _all_possible_profile(), [])
+    distribution = next(p for p in plan if p.analysis_type == "distribution_analysis")
+    assert distribution.target_columns[0] == "revenue"
+
+    association = next(p for p in plan if p.analysis_type == "association_rules")
+    assert set(association.target_columns) == {"region", "segment"}
 
 
 # ── Phase 4.6: question_intent.preferred_metrics/preferred_dimensions ──────
@@ -189,6 +325,68 @@ def test_temporal_metric_falls_back_to_file_order_when_no_preferred_metric():
             ColumnContext(name="revenue_actual", semantic_role="metric"),
         ],
         context_source="local_fallback",
+    )
+    plan = AnalyticsPlanner().plan(ctx, _all_possible_profile(), [])
+    forecast = next(p for p in plan if p.analysis_type == "forecast")
+    assert forecast.target_columns == ["date", "units_sold"]
+
+
+def test_forecast_includes_llm_recommended_features_when_target_matches_the_metric():
+    """Regression test for an inconsistency caught via live testing:
+    ForecastAnalyzer's XGBoost Regressor path already reads
+    target_columns[2:] as extra feature columns (its own documented
+    convention), but rule_temporal_metric never populated them from
+    feature_recommendation.feature_columns the way rule_target_column_driven
+    now does for classification/regression -- so forecast's XGBoost variant
+    fell back to structurally-derived features even when the LLM had
+    already rated better ones. Only applies when the recommendation's own
+    target_column IS this forecast's metric -- using features picked for a
+    different target would be a category error."""
+    ctx = DatasetContext(
+        row_count=100, column_count=4,
+        columns=[
+            ColumnContext(name="date", semantic_role="temporal_dimension", is_temporal=True),
+            ColumnContext(name="revenue_actual", semantic_role="metric"),
+            ColumnContext(name="marketing_spend", semantic_role="metric"),
+            ColumnContext(name="region", semantic_role="dimension"),
+        ],
+        context_source="local_fallback",
+        feature_recommendation={
+            "target_column": "revenue_actual",
+            "feature_columns": [
+                {"column": "region", "usefulness": "medium"},
+                {"column": "marketing_spend", "usefulness": "high"},
+            ],
+        },
+    )
+    plan = AnalyticsPlanner().plan(ctx, _all_possible_profile(), [])
+    forecast = next(p for p in plan if p.analysis_type == "forecast")
+    assert forecast.target_columns == ["date", "revenue_actual", "marketing_spend", "region"]
+
+    # trend/correlation/anomaly_detection/time_series_analysis must NOT
+    # get the extra features -- CorrelationAnalyzer/AnomalyAnalyzer consume
+    # the whole target_columns list as their feature set, so injecting
+    # extras there would silently change what they analyze.
+    for analysis_type in ("trend", "correlation", "anomaly_detection", "time_series_analysis"):
+        other = next(p for p in plan if p.analysis_type == analysis_type)
+        assert other.target_columns == ["date", "revenue_actual"]
+
+
+def test_forecast_ignores_feature_recommendation_for_a_different_target():
+    """The recommendation's feature_columns were picked for a different
+    target_column than what's being forecasted -- must not be reused."""
+    ctx = DatasetContext(
+        row_count=100, column_count=3,
+        columns=[
+            ColumnContext(name="date", semantic_role="temporal_dimension", is_temporal=True),
+            ColumnContext(name="units_sold", semantic_role="metric"),
+            ColumnContext(name="marketing_spend", semantic_role="metric"),
+        ],
+        context_source="local_fallback",
+        feature_recommendation={
+            "target_column": "revenue_actual",  # a different metric, not even in this dataset
+            "feature_columns": [{"column": "marketing_spend", "usefulness": "high"}],
+        },
     )
     plan = AnalyticsPlanner().plan(ctx, _all_possible_profile(), [])
     forecast = next(p for p in plan if p.analysis_type == "forecast")

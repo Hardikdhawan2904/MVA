@@ -159,7 +159,7 @@ algorithms:
   # ── clustering / segmentation ──────────────────────────────────────────
   - algorithm: K-Means
     purpose: segmentation
-    requirements: {requires_ml: true, min_rows: 10, requires_datetime: false, requires_target: false, supports_categorical: false}
+    requirements: {requires_ml: true, min_rows: 10, requires_datetime: false, requires_target: false, supports_categorical: false, min_feature_columns: 2}
     inputs: [metric]
     outputs: [cluster_assignments, centroids, inertia]
     cost_tier: moderate
@@ -169,7 +169,7 @@ algorithms:
 
   - algorithm: DBSCAN
     purpose: segmentation
-    requirements: {requires_ml: true, min_rows: 10, requires_datetime: false, requires_target: false, supports_categorical: false}
+    requirements: {requires_ml: true, min_rows: 10, requires_datetime: false, requires_target: false, supports_categorical: false, min_feature_columns: 2}
     inputs: [metric]
     outputs: [cluster_assignments, noise_points]
     cost_tier: moderate
@@ -179,7 +179,7 @@ algorithms:
 
   - algorithm: Hierarchical Clustering
     purpose: segmentation
-    requirements: {requires_ml: true, min_rows: 10, requires_datetime: false, requires_target: false, supports_categorical: false}
+    requirements: {requires_ml: true, min_rows: 10, requires_datetime: false, requires_target: false, supports_categorical: false, min_feature_columns: 2}
     inputs: [metric]
     outputs: [cluster_assignments, dendrogram]
     cost_tier: moderate
@@ -239,7 +239,7 @@ algorithms:
 
   - algorithm: K-Means (clustering)
     purpose: clustering
-    requirements: {requires_ml: true, min_rows: 10, requires_datetime: false, requires_target: false, supports_categorical: false}
+    requirements: {requires_ml: true, min_rows: 10, requires_datetime: false, requires_target: false, supports_categorical: false, min_feature_columns: 2}
     inputs: [metric]
     outputs: [cluster_assignments, centroids, inertia]
     cost_tier: moderate

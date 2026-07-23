@@ -11,7 +11,7 @@ import pytest
 
 from app.services.capability_resolution.analytics_capability_resolver import AnalyticsCapabilityResolver
 from app.services.capability_resolution.models import (
-    ALL_CAPABILITIES, FORECASTING, CapabilityProfile, CapabilityResult, ExecutionResult, StructuralResult,
+    ALL_CAPABILITIES, FORECASTING, SEGMENTATION, CapabilityProfile, CapabilityResult, ExecutionResult, StructuralResult,
 )
 from app.services.dataset_context.local_schema_inferer import LocalSchemaInferer
 from app.services.dataset_context.models import ColumnContext, DatasetContext
@@ -124,6 +124,42 @@ def test_ungated_analysis_type_always_deterministic_regardless_of_ml_execution_a
     assert selected.algorithm == "Trend (linear regression over time)"
 
 
+def test_ungated_analysis_type_reason_never_claims_an_execution_gate_failed():
+    """Regression test for a bug caught via live testing: 'trend' has no
+    capability gate at all (ANALYSIS_TYPE_TO_CAPABILITY has no entry for
+    it), so is_analysis_type_ml_viable('trend') is always False by design,
+    not because any readiness threshold check failed. Reusing the same
+    "...execution gate did not..." reason text for both cases made
+    base.py's substring-matched ml_readiness_blocked come out True for
+    'trend' even when the real ml_readiness_score was above threshold —
+    graph.py's trace builder then rendered a self-contradictory
+    {score: 76.1, threshold: 75, passed: false}. The reason text for a
+    genuinely ungated analysis type must never contain "execution gate"."""
+    ctx = _forecast_ctx()
+    # Even with a capability profile that says ML is fully viable for
+    # FORECASTING, 'trend' itself has no capability entry — its reason
+    # must reflect "no gate", not "gate failed".
+    profile = _profile(FORECASTING, execution=True, confidence=0.99)
+    budget = BudgetConfig(max_parallel_analyses=8, max_ml_analyses=3, max_expensive_operations=2)
+    selector = ModelSelector(ModelRegistry(), budget)
+    selected = selector.select(_scheduled("trend", ml_execution_allowed=True), ctx, profile)
+    assert not any("execution gate" in r for r in selected.reasons)
+    assert any("no ML-capable algorithm registered" in r for r in selected.reasons)
+
+
+def test_genuinely_gated_analysis_type_still_reports_execution_gate_failure():
+    """Companion to the test above: a real capability-gated analysis type
+    (forecast) whose execution gate genuinely fails must still get the
+    "execution gate did not" reason -- this fix must not blur the two
+    cases together in the other direction."""
+    ctx = _forecast_ctx()
+    profile = _profile(FORECASTING, execution=False)
+    budget = BudgetConfig(max_parallel_analyses=8, max_ml_analyses=3, max_expensive_operations=2)
+    selector = ModelSelector(ModelRegistry(), budget)
+    selected = selector.select(_scheduled("forecast", ml_execution_allowed=True), ctx, profile)
+    assert any("execution gate did not" in r for r in selected.reasons)
+
+
 def test_expensive_budget_exhaustion_downgrades_subsequent_selections():
     ctx = _forecast_ctx()
     profile = _profile(FORECASTING, execution=True)
@@ -146,6 +182,28 @@ def test_requirements_filtering_excludes_algorithms_below_min_rows():
     selector = ModelSelector(ModelRegistry(), budget)
     selected = selector.select(_scheduled("forecast"), ctx, profile)
     assert selected.algorithm != "Prophet"  # excluded by min_rows requirement
+
+
+def test_requirements_filtering_excludes_kmeans_when_target_columns_has_fewer_than_two_columns():
+    """Regression test for a bug caught via live testing: segmentation's
+    target_columns is correctly just [metric_col] for its single-metric-
+    binning deterministic strategies (Quantile Binning, etc.), but K-Means
+    still got selected as segmentation's first ML candidate -- nothing
+    filtered it out despite K-Means needing >= 2 columns to cluster on --
+    and then failed its own internal check at execution time, producing
+    empty evidence and wasting the ML slot. min_feature_columns must
+    exclude K-Means/DBSCAN/Hierarchical Clustering whenever fewer columns
+    than they need are actually available, falling through to a
+    deterministic strategy that can genuinely run with just one column."""
+    ctx = _forecast_ctx()  # 2 real columns exist in the dataset...
+    profile = _profile(SEGMENTATION, execution=True)
+    budget = BudgetConfig(max_parallel_analyses=8, max_ml_analyses=3, max_expensive_operations=2)
+    selector = ModelSelector(ModelRegistry(), budget)
+    pa = PlannedAnalysis(analysis_type="segmentation", target_columns=["revenue"], priority=1)  # ...but only 1 is proposed
+    sa = ScheduledAnalysis(sequence=1, planned_analysis=pa, ml_execution_allowed=True)
+    selected = selector.select(sa, ctx, profile)
+    assert selected.algorithm != "K-Means"
+    assert selected.requires_ml is False
 
 
 def test_selector_never_returns_none_algorithm_for_a_covered_analysis_type():

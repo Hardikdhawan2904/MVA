@@ -68,14 +68,25 @@ class ModelSelector:
             scheduled_analysis.ml_execution_allowed
             and capability_profile.is_analysis_type_ml_viable(analysis_type)
         )
-        if scheduled_analysis.ml_execution_allowed and not capability_profile.is_analysis_type_ml_viable(analysis_type):
+        capability = capability_for_analysis_type(analysis_type)
+        if capability is None:
+            # No readiness gate exists for this analysis type at all (trend,
+            # root_cause, ...) — deterministic-first by design, not because
+            # any threshold check failed. Must never be confused with the
+            # branch below: a caller (graph.py's trace builder) that saw
+            # "execution gate did not" here would build a gate object
+            # showing the CURRENT ml_readiness_score against the threshold
+            # with a hardcoded passed=False, even when the score is
+            # genuinely above threshold — self-contradictory and wrong,
+            # since no such gate was ever evaluated for this analysis type.
+            reasons.append(f"'{analysis_type}' has no ML-capable algorithm registered — deterministic by design")
+        elif scheduled_analysis.ml_execution_allowed and not capability_profile.is_analysis_type_ml_viable(analysis_type):
             # Surface capability_profile's own execution.reason (Stage 1's
             # "ML readiness (X%) below the Y% threshold..." text) rather
             # than just naming the gate — gives the deterministic-fallback
             # audit trail the same readiness-score detail today's old
             # handlers' bespoke fallback_reason strings used to include.
-            capability = capability_for_analysis_type(analysis_type)
-            execution = capability_profile.capabilities.get(capability).execution if capability else None
+            execution = capability_profile.capabilities.get(capability).execution
             detail = f" ({execution.reason})" if execution and execution.reason else ""
             reasons.append(f"Scheduler allowed ML, but capability resolution's execution gate did not{detail} — deterministic only")
         elif not scheduled_analysis.ml_execution_allowed:
@@ -83,13 +94,14 @@ class ModelSelector:
         else:
             reasons.append("ML execution allowed (scheduler budget + capability resolution both passed)")
 
+        target_columns = scheduled_analysis.planned_analysis.target_columns
         candidates = self._registry.ml_algorithms_for(analysis_type) if ml_allowed else []
-        candidates = self._filter_by_requirements(candidates, dataset_context)
+        candidates = self._filter_by_requirements(candidates, dataset_context, target_columns)
 
         if not candidates:
             if ml_allowed:
                 reasons.append(f"No viable ML algorithm for '{analysis_type}' given this dataset — falling back to deterministic")
-            candidates = self._filter_by_requirements(self._registry.deterministic_algorithms_for(analysis_type), dataset_context)
+            candidates = self._filter_by_requirements(self._registry.deterministic_algorithms_for(analysis_type), dataset_context, target_columns)
             if preferred_algorithm:
                 candidates = self._prioritize_preferred(candidates, preferred_algorithm, reasons)
 
@@ -119,7 +131,9 @@ class ModelSelector:
         rest = [c for c in candidates if c.algorithm != preferred_algorithm]
         return preferred + rest
 
-    def _filter_by_requirements(self, candidates: list[AlgorithmSpec], ctx: DatasetContext) -> list[AlgorithmSpec]:
+    def _filter_by_requirements(
+        self, candidates: list[AlgorithmSpec], ctx: DatasetContext, target_columns: list[str],
+    ) -> list[AlgorithmSpec]:
         has_temporal = any(c.is_temporal for c in ctx.columns)
         has_target = bool((ctx.feature_recommendation or {}).get("target_column"))
         survivors = []
@@ -130,6 +144,8 @@ class ModelSelector:
             if req.requires_datetime and not has_temporal:
                 continue
             if req.requires_target and not has_target:
+                continue
+            if len(target_columns) < req.min_feature_columns:
                 continue
             survivors.append(spec)
         return survivors
