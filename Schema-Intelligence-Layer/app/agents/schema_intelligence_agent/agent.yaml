@@ -48,10 +48,9 @@ agent:
 
   # ── LLM config ──────────────────────────────────────────────────────────────
   llm:
-    provider: Azure OpenAI (falls back to Groq)   # see classification_agent/agent.yaml
-                            # for the one sub-agent that actually makes LLM calls,
-                            # and its own llm section for how the fallback works
-    model: from_settings   # Settings.GROQ_MODEL / AZURE_OPENAI_DEPLOYMENT
+    provider: Groq   # see classification_agent/agent.yaml for the one sub-agent
+                            # that actually makes LLM calls, and its own llm section
+    model: from_settings   # Settings.GROQ_MODEL
 
   # ── LangGraph ───────────────────────────────────────────────────────────────
   langgraph:

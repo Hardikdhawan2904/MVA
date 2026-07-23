@@ -8,7 +8,6 @@ import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from groq import Groq
-import httpx
 
 from app.config import settings
 from app.models.schemas import DatasetMetadata, LLMClassification
@@ -41,40 +40,7 @@ def _get_groq_client() -> Groq:
     return Groq(api_key=settings.GROQ_API_KEY)
 
 
-def _call_azure_openai(messages: list[dict], temperature: float, max_tokens: int) -> str | None:
-    """Best-effort first attempt before Groq -- returns None (never
-    raises) on any failure or when unconfigured, so every existing Groq
-    call site's own try/except-and-fall-back logic stays the real
-    fallback path, unchanged."""
-    if not (settings.AZURE_OPENAI_API_KEY and settings.AZURE_OPENAI_ENDPOINT and settings.AZURE_OPENAI_DEPLOYMENT):
-        return None
-    try:
-        response = httpx.post(
-            f"{settings.AZURE_OPENAI_ENDPOINT.rstrip('/')}/openai/v1/chat/completions",
-            headers={"api-key": settings.AZURE_OPENAI_API_KEY, "Content-Type": "application/json"},
-            json={
-                "model": settings.AZURE_OPENAI_DEPLOYMENT,
-                "messages": messages,
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-            },
-            timeout=30.0,
-        )
-        response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"]
-    except Exception as e:
-        logger.warning(f"Azure OpenAI call failed: {e} — falling back to Groq")
-        return None
-
-
 def _chat_complete(client: Groq, messages: list[dict], temperature: float, max_tokens: int) -> str:
-    """Azure OpenAI first (if configured), then the given Groq client --
-    raises exactly like a raw client.chat.completions.create(...) call
-    would, so every existing call site's try/except around that call
-    doesn't need to change at all."""
-    azure_content = _call_azure_openai(messages, temperature, max_tokens)
-    if azure_content is not None:
-        return azure_content
     response = client.chat.completions.create(
         model=settings.GROQ_MODEL, messages=messages, temperature=temperature, max_tokens=max_tokens,
     )

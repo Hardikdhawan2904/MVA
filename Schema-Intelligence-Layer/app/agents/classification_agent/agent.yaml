@@ -29,24 +29,18 @@ agent:
 
   # ── LLM config ──────────────────────────────────────────────────────────────
   llm:
-    provider: Azure OpenAI (falls back to Groq)   # _build_chat_model() in nodes/pipeline.py:
-                            # AzureChatOpenAI when AZURE_OPENAI_API_KEY/ENDPOINT/DEPLOYMENT
-                            # are all set (root .env), else ChatGroq — not a chain here,
-                            # a one-time selection at agent construction, unlike the
-                            # httpx-based tool calls below which do retry Groq per-call.
-    model: from_settings   # Settings.GROQ_MODEL (Groq path) / AZURE_OPENAI_DEPLOYMENT
-                            # (Azure path) — shared across every LLM-touching node in
-                            # this service
+    provider: Groq   # _build_chat_model() in nodes/pipeline.py: ChatGroq — shared
+                            # across every LLM-touching node in this service.
+    model: from_settings   # Settings.GROQ_MODEL
     # Coordinator turn (deciding which tool to call) — deliberately low temperature,
     # this is a fixed two-step sequence, not open-ended reasoning.
     temperature: 0.1
     max_tokens: 512
     recursion_limit: 10
-    # Each tool's own internal call (via llm_service.py's _chat_complete —
-    # Azure OpenAI first, Groq fallback, same as the coordinator above) keeps
-    # its original tuning (descriptions: temperature 0.2/max_tokens 2000;
-    # classification: temperature 0.1/max_tokens 500) — see tools.py. The
-    # coordinator's LLM settings above only govern its own tool-selection
+    # Each tool's own internal call (via llm_service.py's _chat_complete)
+    # keeps its original tuning (descriptions: temperature 0.2/max_tokens
+    # 2000; classification: temperature 0.1/max_tokens 500) — see tools.py.
+    # The coordinator's LLM settings above only govern its own tool-selection
     # turns, not the work each tool does once invoked.
 
   # ── LangGraph ───────────────────────────────────────────────────────────────

@@ -1,9 +1,10 @@
-"""tests/test_llm_service.py — Azure OpenAI first, Groq fallback.
+"""tests/test_llm_service.py — Groq-only LLM service tests.
 
-app/services/llm_service.py had no automated test coverage before this
-(only test_local.py, a manual CLI script) — added alongside the Azure
-OpenAI integration to cover the new _chat_complete()/_call_azure_openai()
-functions specifically, not a general retrofit of the whole module.
+Replaces the previous Azure-first/Groq-fallback test file (removed
+alongside the Azure OpenAI integration) with coverage of the actual
+current behavior: _chat_complete()'s Groq call, and the two public
+functions' graceful degradation to placeholder/default output when the
+LLM response can't be parsed or the call fails outright.
 """
 
 import sys
@@ -12,90 +13,86 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import httpx
+from app.models.schemas import DatasetMetadata
+from app.services.llm_service import (
+    _chat_complete,
+    _generate_column_descriptions_batch,
+    classify_dataset,
+    generate_column_descriptions,
+)
 
-from app.services.llm_service import _call_azure_openai, _chat_complete
 
-
-def _mock_httpx_response(content: str) -> httpx.Response:
-    return httpx.Response(
-        200,
-        json={"choices": [{"message": {"content": content}}]},
-        request=httpx.Request("POST", "https://example.openai.azure.com/openai/v1/chat/completions"),
+def _metadata(**overrides) -> DatasetMetadata:
+    defaults = dict(
+        dataset_id="DS_1", dataset_name="test.csv", file_type="csv",
+        upload_timestamp="2026-01-01T00:00:00Z", row_count=10, column_count=2,
+        column_names=["amount", "region"], column_data_types=["float", "string"],
     )
+    defaults.update(overrides)
+    return DatasetMetadata(**defaults)
 
 
-def test_azure_unconfigured_returns_none():
-    with patch("app.services.llm_service.settings") as mock_settings:
-        mock_settings.AZURE_OPENAI_API_KEY = ""
-        mock_settings.AZURE_OPENAI_ENDPOINT = ""
-        mock_settings.AZURE_OPENAI_DEPLOYMENT = ""
-        assert _call_azure_openai([{"role": "user", "content": "hi"}], 0.1, 100) is None
+def _client_with_content(content: str) -> MagicMock:
+    client = MagicMock()
+    client.chat.completions.create.return_value.choices = [MagicMock(message=MagicMock(content=content))]
+    return client
 
 
-def test_azure_configured_and_succeeds_returns_content():
-    with patch("app.services.llm_service.settings") as mock_settings, \
-         patch("httpx.post", return_value=_mock_httpx_response("hello from azure")) as mock_post:
-        mock_settings.AZURE_OPENAI_API_KEY = "fake-key"
-        mock_settings.AZURE_OPENAI_ENDPOINT = "https://example.openai.azure.com"
-        mock_settings.AZURE_OPENAI_DEPLOYMENT = "gpt-4o"
-        result = _call_azure_openai([{"role": "user", "content": "hi"}], 0.1, 100)
-
-    assert result == "hello from azure"
-    assert mock_post.call_args[1]["headers"]["api-key"] == "fake-key"
-    assert "openai/v1/chat/completions" in mock_post.call_args[0][0]
+def test_chat_complete_calls_groq_and_returns_content():
+    client = _client_with_content("hello")
+    result = _chat_complete(client, [{"role": "user", "content": "hi"}], temperature=0.1, max_tokens=50)
+    assert result == "hello"
+    client.chat.completions.create.assert_called_once()
+    assert client.chat.completions.create.call_args.kwargs["temperature"] == 0.1
+    assert client.chat.completions.create.call_args.kwargs["max_tokens"] == 50
 
 
-def test_azure_configured_but_call_fails_returns_none_not_raises():
-    with patch("app.services.llm_service.settings") as mock_settings, \
-         patch("httpx.post", side_effect=httpx.ConnectError("refused")):
-        mock_settings.AZURE_OPENAI_API_KEY = "fake-key"
-        mock_settings.AZURE_OPENAI_ENDPOINT = "https://example.openai.azure.com"
-        mock_settings.AZURE_OPENAI_DEPLOYMENT = "gpt-4o"
-        assert _call_azure_openai([{"role": "user", "content": "hi"}], 0.1, 100) is None
+def test_generate_column_descriptions_batch_parses_valid_json():
+    client = _client_with_content('{"amount": "The transaction amount.", "region": "Geographic region."}')
+    result = _generate_column_descriptions_batch(client, _metadata(), ["amount", "region"], ["float", "string"])
+    assert result == {"amount": "The transaction amount.", "region": "Geographic region."}
 
 
-def test_chat_complete_uses_azure_when_available_never_touches_groq_client():
-    fake_groq_client = MagicMock()
-    with patch("app.services.llm_service.settings") as mock_settings, \
-         patch("httpx.post", return_value=_mock_httpx_response("azure content")):
-        mock_settings.AZURE_OPENAI_API_KEY = "fake-key"
-        mock_settings.AZURE_OPENAI_ENDPOINT = "https://example.openai.azure.com"
-        mock_settings.AZURE_OPENAI_DEPLOYMENT = "gpt-4o"
-        content = _chat_complete(fake_groq_client, [{"role": "user", "content": "hi"}], 0.1, 100)
-
-    assert content == "azure content"
-    fake_groq_client.chat.completions.create.assert_not_called()
+def test_generate_column_descriptions_batch_falls_back_on_malformed_json():
+    client = _client_with_content("not valid json at all")
+    result = _generate_column_descriptions_batch(client, _metadata(), ["amount", "region"], ["float", "string"])
+    assert result == {
+        "amount": "Column 'amount' of type float",
+        "region": "Column 'region' of type string",
+    }
 
 
-def test_chat_complete_falls_back_to_groq_client_when_azure_unconfigured():
-    fake_groq_client = MagicMock()
-    fake_groq_client.chat.completions.create.return_value.choices = [
-        MagicMock(message=MagicMock(content="groq content"))
-    ]
-    with patch("app.services.llm_service.settings") as mock_settings:
-        mock_settings.AZURE_OPENAI_API_KEY = ""
-        mock_settings.AZURE_OPENAI_ENDPOINT = ""
-        mock_settings.AZURE_OPENAI_DEPLOYMENT = ""
-        mock_settings.GROQ_MODEL = "llama-3.1-8b-instant"
-        content = _chat_complete(fake_groq_client, [{"role": "user", "content": "hi"}], 0.1, 100)
-
-    assert content == "groq content"
-    fake_groq_client.chat.completions.create.assert_called_once()
+def test_generate_column_descriptions_batch_falls_back_when_groq_call_raises():
+    client = MagicMock()
+    client.chat.completions.create.side_effect = Exception("groq unavailable")
+    result = _generate_column_descriptions_batch(client, _metadata(), ["amount"], ["float"])
+    assert result == {"amount": "Column 'amount' of type float"}
 
 
-def test_chat_complete_falls_back_to_groq_client_when_azure_call_fails():
-    fake_groq_client = MagicMock()
-    fake_groq_client.chat.completions.create.return_value.choices = [
-        MagicMock(message=MagicMock(content="groq content after azure failure"))
-    ]
-    with patch("app.services.llm_service.settings") as mock_settings, \
-         patch("httpx.post", side_effect=httpx.ConnectError("refused")):
-        mock_settings.AZURE_OPENAI_API_KEY = "fake-key"
-        mock_settings.AZURE_OPENAI_ENDPOINT = "https://example.openai.azure.com"
-        mock_settings.AZURE_OPENAI_DEPLOYMENT = "gpt-4o"
-        mock_settings.GROQ_MODEL = "llama-3.1-8b-instant"
-        content = _chat_complete(fake_groq_client, [{"role": "user", "content": "hi"}], 0.1, 100)
+def test_generate_column_descriptions_end_to_end_with_mocked_client():
+    with patch("app.services.llm_service._get_groq_client", return_value=_client_with_content('{"amount": "desc"}')):
+        result = generate_column_descriptions(_metadata(column_names=["amount"], column_data_types=["float"], column_count=1))
+    assert result == {"amount": "desc"}
 
-    assert content == "groq content after azure failure"
-    fake_groq_client.chat.completions.create.assert_called_once()
+
+def test_classify_dataset_parses_valid_json():
+    content = '{"business_domain": "Finance", "sub_domain": "Banking", "dataset_summary": "x", "confidence": 0.9, "reason": "y"}'
+    with patch("app.services.llm_service._get_groq_client", return_value=_client_with_content(content)):
+        result = classify_dataset(_metadata())
+    assert result.business_domain == "Finance"
+    assert result.sub_domain == "Banking"
+    assert result.confidence == 0.9
+
+
+def test_classify_dataset_falls_back_to_other_on_malformed_json():
+    with patch("app.services.llm_service._get_groq_client", return_value=_client_with_content("not json")):
+        result = classify_dataset(_metadata())
+    assert result.business_domain == "Other"
+    assert result.sub_domain == "General"
+
+
+def test_classify_dataset_strips_markdown_json_fences():
+    content = '```json\n{"business_domain": "HR", "sub_domain": "Payroll"}\n```'
+    with patch("app.services.llm_service._get_groq_client", return_value=_client_with_content(content)):
+        result = classify_dataset(_metadata())
+    assert result.business_domain == "HR"

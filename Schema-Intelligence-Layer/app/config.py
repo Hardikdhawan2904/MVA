@@ -25,13 +25,6 @@ class Settings(BaseSettings):
     GROQ_API_KEY: str = ""
     GROQ_MODEL: str = "llama-3.1-8b-instant"
 
-    # Azure OpenAI (optional, tried before Groq in llm_service.py -- see
-    # _chat_complete()). Unset by default, so behavior is byte-identical
-    # to today until explicitly configured.
-    AZURE_OPENAI_API_KEY: str = ""
-    AZURE_OPENAI_ENDPOINT: str = ""
-    AZURE_OPENAI_DEPLOYMENT: str = ""
-
     # Database configuration
     POSTGRES_HOST: str = "localhost"
     POSTGRES_PORT: int = 5433
