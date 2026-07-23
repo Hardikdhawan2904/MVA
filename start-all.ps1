@@ -1,13 +1,25 @@
-# Starts the shared Postgres container plus all four services, each in its own
+# Starts the shared Postgres instance plus all four services, each in its own
 # terminal window (so logs stay separate and readable). Run once from the repo root:
 #   powershell -File start-all.ps1
+#
+# Postgres is a native Windows instance (not Docker) as of the Docker-removal
+# migration -- see the plan doc for why. Data dir: C:\PGData\mva-pipeline,
+# port 5433 (same port Docker used, so no other config changed). It isn't
+# registered as a Windows Service (no admin rights were available when this
+# was set up), so this script starts it the same way it starts everything
+# else: explicitly, every time, idempotently.
 
 $root = $PSScriptRoot
+$pgBin = "C:\Program Files\PostgreSQL\17\bin"
+$pgData = "C:\PGData\mva-pipeline"
 
-Write-Host "Starting shared Postgres..." -ForegroundColor Cyan
-Push-Location (Join-Path $root "Shared-Postgres")
-docker compose up -d
-Pop-Location
+Write-Host "Starting shared Postgres (native, port 5433)..." -ForegroundColor Cyan
+$pgStatus = & "$pgBin\pg_ctl.exe" -D $pgData status
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "  Already running." -ForegroundColor DarkGray
+} else {
+    & "$pgBin\pg_ctl.exe" -D $pgData -l "$pgData\startup.log" start
+}
 
 Start-Sleep -Seconds 2
 

@@ -62,7 +62,7 @@ Each has its own README going deeper on that piece specifically — this file is
    pip install -r requirements.txt -r requirements-dev.txt
    ```
 2. Two layers of `.env` files:
-   - **Root** (`cp .env.example .env`, fill in `GROQ_API_KEY`): shared values genuinely identical across Agent 1, Agent 3, and the Orchestrator — `GROQ_API_KEY`, the `POSTGRES_*` connection details, `LOG_LEVEL`. Each of those three services loads this as a fallback *underneath* its own local `.env` (local always wins on any key both define).
+   - **Root** (`cp .env.example .env`, fill in `GROQ_API_KEY` and, optionally, `AZURE_OPENAI_API_KEY`/`AZURE_OPENAI_ENDPOINT`/`AZURE_OPENAI_DEPLOYMENT`): shared values genuinely identical across Agent 1, Agent 3, and the Orchestrator — the LLM provider keys, the `POSTGRES_*` connection details, `LOG_LEVEL`. Each of those three services loads this as a fallback *underneath* its own local `.env` (local always wins on any key both define). When Azure is configured, every LLM call in Agent 1/2/3 tries Azure OpenAI first, falls back to Groq if that fails or isn't configured, then a deterministic/template fallback if both fail — Azure is never required, only preferred.
    - **Per-service** (`cp .env.example .env` inside `Schema-Intelligence-Layer/`, `Agent-Orchestrator/`, and `Analytics-Agent/`): only what's genuinely local to that service — e.g. Agent 1's `GROQ_MODEL` override, Agent 3's `DATASET_PATH`/`HOST`/`PORT`, the Orchestrator's `AGENT1_BASE_URL`/`AGENT2_BASE_URL`/etc.
    - `MVA-use-case-latest-one` (Agent 2) is the exception — it has its own differently-shaped config (`DATABASE_URL`, `LLM_API_KEY`, a separate Postgres role) and keeps its own fully self-contained `.env`, untouched by the root file.
 3. Start everything at once:
@@ -71,7 +71,7 @@ Each has its own README going deeper on that piece specifically — this file is
 powershell -File start-all.ps1
 ```
 
-This starts the shared Postgres container plus all four services (using the one shared venv), each in its own terminal window. Then:
+This starts the shared Postgres instance (a native Windows Postgres install, not Docker — data dir `C:\PGData\mva-pipeline`, port 5433, started/checked idempotently via `pg_ctl`) plus all four services (using the one shared venv), each in its own terminal window. Then:
 
 - Full pipeline (recommended entry point): `http://127.0.0.1:8002/docs`
 - Agent 1 alone: `http://127.0.0.1:8000/docs`
@@ -97,7 +97,7 @@ Agent 3 (`Analytics-Agent/`, port 8003) is a FastAPI service like Agent 1/2 — 
 - **Inputs it's given**: the same uploaded file (posted straight through, no temp file on the orchestrator's side anymore), and Agent 2's `ml_readiness`/`llm_readiness` scores *and* their full breakdown (from `agent2.readiness_assessments` — strengths/blocking_issues/evidence, not just the score) as Form fields.
 - **Explains itself**: every `status: "ok"` response carries `execution_trace` (step-by-step: intent → ML gate/engine → LLM gate/engine, each with real per-step timing and, where a real model ran, its version/accuracy from `ml/model_registry.json`) and `execution_summary` (a compact rollup) — see [`API_REFERENCE.md`](./API_REFERENCE.md#execution_trace--execution_summary).
 - **Best-effort**: if it's unreachable or returns a non-200, `agent3.status == "failed"` with a reason — this never fails Agent 1/2's already-successful result.
-- **Setup**: covered by the normal Quick Start above (`pip install -r requirements.txt` includes its deps — `duckdb`, `prophet`, `lightgbm`, `xgboost`, `scikit-learn`, `shap` — and it needs its own `Analytics-Agent/.env` with `GROQ_API_KEY`, same as Agent 1/2). Nothing separate to clone or install.
+- **Setup**: covered by the normal Quick Start above (`pip install -r requirements.txt` includes its deps — `duckdb`, `prophet`, `lightgbm`, `xgboost`, `scikit-learn`, `shap` — and it falls back to the root `.env`'s `GROQ_API_KEY`/`AZURE_OPENAI_*`, same as Agent 1). Nothing separate to clone or install.
 - Configured via `Agent-Orchestrator/.env`: `ANALYTICS_AGENT_BASE_URL` (defaults to `http://127.0.0.1:8003`).
 - A standalone local-testing CLI (no HTTP server needed) is still available at `Analytics-Agent/scripts/cli.py --query "..."`.
 - Originally built as a separate project by a colleague (github.com/VirenKhapra/Analytics-agent-for-project-3) and vendored in here; its own repo still exists independently if contributing changes back upstream.
@@ -106,5 +106,5 @@ Agent 3 (`Analytics-Agent/`, port 8003) is a FastAPI service like Agent 1/2 — 
 ## Known constraints worth knowing
 
 - Agent 2 supports 5 primary domains (`Finance`, `Payments`, `Customer`, `HR`, `Insurance`) — each backed by a real config file defining its secondary domains, hierarchy templates, chart templates, and business rules. Agent 1's classification is open-vocabulary (14+ suggested domains), so `Agent-Orchestrator`'s `extract_domain_and_metadata` node canonicalizes known synonyms (e.g. `"Human Resources"` → `"HR"`, case variants) onto Agent 2's exact 5 strings before forwarding — a domain that's genuinely unsupported (or a synonym not yet in the map) still stops the pipeline with a clear error rather than guessing.
-- LLM features (column descriptions, domain classification, rule suggestions) require a Groq API key and degrade gracefully to deterministic fallbacks if the key is missing or rate-limited — the pipeline never hard-fails because of the LLM.
+- LLM features (column descriptions, domain classification, rule suggestions) try Azure OpenAI first (when configured), fall back to Groq, and degrade gracefully to deterministic fallbacks if both are missing/rate-limited/unreachable — the pipeline never hard-fails because of the LLM.
 - Agent 3's own engine is domain-agnostic (see `Analytics-Agent/README.md`'s Domain Plugin architecture) — only CSV, not Excel, and its real ML models (Prophet/LightGBM/IsolationForest/XGBoost/K-Means) are trained and persisted against the Insurance dataset only, so a non-Insurance upload's ML-eligible analyses fit fresh per request rather than predicting against a cached model. A genuinely unsupported domain (not one of the 5 above) still stops the pipeline at Agent 2's own `UNSUPPORTED_DOMAIN` check, before Agent 3 is ever reached — that's Agent 2's capability boundary, not Agent 3's gate.

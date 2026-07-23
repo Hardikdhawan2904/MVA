@@ -25,6 +25,7 @@ python-dotenv
 langgraph
 langchain-groq
 langchain-core
+langchain-openai  # AzureChatOpenAI -- Azure OpenAI as a second LLM provider, tried before Groq
 
 # ── Analytics Agent (Insurance Q&A stage) ────────────────────────────────
 duckdb>=0.10.0

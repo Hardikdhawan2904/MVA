@@ -1,3 +1,15 @@
+# Retired as of the Docker-removal migration -- Postgres for this project now
+# runs as a native Windows instance instead (no Docker dependency for local
+# dev): data dir C:\PGData\mva-pipeline, port 5433 (same port this container
+# used, so no other config changed), started via start-all.ps1
+# (`pg_ctl -D C:\PGData\mva-pipeline start`), same mva_pipeline database and
+# agent1/agent2/agent3 schemas/credentials as before.
+#
+# This file and the named volume are left in place, not deleted, as a
+# rollback path -- `docker compose up -d` here still works if you ever want
+# to go back to the container instead. Just stop the native instance first
+# (`pg_ctl -D C:\PGData\mva-pipeline stop`) so the two don't fight over
+# port 5433.
 services:
   postgres:
     image: postgres:16-alpine
