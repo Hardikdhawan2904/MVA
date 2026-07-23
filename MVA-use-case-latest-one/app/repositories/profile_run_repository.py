@@ -205,6 +205,8 @@ class ProfileRunRepository:
                 recommendations_json=a.get("recommendations"),
                 evidence_json=a.get("evidence"),
                 weight_profile_version=a.get("weight_profile_version"),
+                dataset_score=a.get("dataset_score"),
+                task_compatibility_score=a.get("task_compatibility_score"),
             )
             self._session.add(ra)
 

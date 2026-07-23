@@ -37,7 +37,11 @@ agent:
 
   # ── LLM config ──────────────────────────────────────────────────────────────
   llm:
-    provider: Groq
+    provider: Azure OpenAI (falls back to Groq)   # _build_chat_model() in
+                            # nodes/pipeline.py: AzureChatOpenAI when
+                            # AZURE_OPENAI_API_KEY/ENDPOINT/DEPLOYMENT are all set,
+                            # else ChatGroq — a construction-time selection, not a
+                            # per-call chain
     model: from_settings   # resolved at runtime from Settings.llm_model — kept
                             # out of this file so one env var controls every
                             # LLM-touching node in the pipeline, not just this agent

@@ -90,6 +90,8 @@ def _readiness_assessment_to_dict(ra) -> dict[str, Any]:
         "recommendations": ra.recommendations_json,
         "evidence": ra.evidence_json,
         "weight_profile_version": ra.weight_profile_version,
+        "dataset_score": ra.dataset_score,
+        "task_compatibility_score": ra.task_compatibility_score,
     }
 
 

@@ -206,14 +206,27 @@ class ChartCandidateGenerator:
     ) -> tuple | None:
         """Find the first column satisfying a required_roles entry — checked
         against ColumnRole, then candidate_semantic_type, then two special
-        cases that aren't per-column facts: hierarchy_dimension (membership in
-        the detected hierarchy chain) and status_dimension (alias for the
-        generator's generic "status" default)."""
+        cases that aren't per-column facts: hierarchy_dimension (the
+        hierarchy's own top level — hierarchy_levels[0], see below) and
+        status_dimension (alias for the generator's generic "status"
+        default)."""
         if role == "hierarchy_dimension":
             if not hierarchy_levels:
                 return None
+            # Must be hierarchy_levels[0] specifically, not just "any
+            # column in the hierarchy chain" -- _resolve_templates' title
+            # substitution (a few lines below in _resolve_templates)
+            # always uses hierarchy_levels[0] for "{hierarchy_level}",
+            # so picking a different level here silently mismatches the
+            # chart's title against its actual data. Confirmed live: with
+            # hierarchy_levels=["region", "country_name"], iterating
+            # `columns` in file order matched "country_name" first (it's
+            # column 6 vs "region" at column 7 in that CSV) while the
+            # title still said "region" -- a bar chart titled "Premium by
+            # region" whose bars were actually 6 individual countries.
+            target = hierarchy_levels[0]
             for p, c in columns:
-                if p.physical_name in hierarchy_levels:
+                if p.physical_name == target:
                     return (p, c)
             return None
 

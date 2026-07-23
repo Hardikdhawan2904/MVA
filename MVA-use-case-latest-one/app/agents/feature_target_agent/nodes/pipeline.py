@@ -13,7 +13,9 @@ from typing import Any, Literal
 
 from langchain_core.messages import AIMessage
 from langchain_groq import ChatGroq
+from langchain_openai import AzureChatOpenAI
 
+from app.core.config import Settings
 from app.core.logging import get_logger
 from app.agents.feature_target_agent.config import get_agent_tool_names, get_llm_config
 from app.agents.feature_target_agent.state import FeatureTargetAgentState
@@ -24,6 +26,27 @@ logger = get_logger(__name__)
 VALID_PROBLEM_TYPES = {"classification", "regression", "unknown"}
 VALID_APPROACHES = {"ml", "llm", "hybrid", "unknown"}
 VALID_USEFULNESS = {"high", "medium", "low"}
+
+
+def _build_chat_model(llm_model: str, api_key: str, temperature: float, max_tokens: int):
+    """Azure OpenAI when configured (read directly via a fresh Settings()
+    -- pydantic-settings reads .env with no args needed, avoiding threading
+    3 new params through build_feature_target_graph/run_feature_target_agent
+    just for this), else Groq exactly as before. A selection, not a chain:
+    the caller (ProfilingGraphNodes.recommend_target_features) already
+    wraps the whole agent run in try/except with a deterministic fallback,
+    which stays the real fallback if whichever provider fails."""
+    settings = Settings()
+    if settings.azure_openai_api_key and settings.azure_openai_endpoint and settings.azure_openai_deployment:
+        return AzureChatOpenAI(
+            azure_endpoint=settings.azure_openai_endpoint,
+            azure_deployment=settings.azure_openai_deployment,
+            api_key=settings.azure_openai_api_key,
+            api_version="2024-08-01-preview",
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+    return ChatGroq(model=llm_model, api_key=api_key, temperature=temperature, max_tokens=max_tokens)
 
 
 def _extract_json(content: str) -> dict[str, Any] | None:
@@ -60,12 +83,7 @@ class FeatureTargetAgentNodes:
         registry = tools_to_registry(all_tools)
         self.tools = [registry[name] for name in get_agent_tool_names() if name in registry]
 
-        llm = ChatGroq(
-            model=llm_model,
-            api_key=api_key,
-            temperature=llm_config["temperature"],
-            max_tokens=llm_config["max_tokens"],
-        )
+        llm = _build_chat_model(llm_model, api_key, llm_config["temperature"], llm_config["max_tokens"])
         self._llm_with_tools = llm.bind_tools(self.tools)
 
     def call_model(self, state: FeatureTargetAgentState) -> dict:

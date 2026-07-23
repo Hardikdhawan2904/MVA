@@ -1,6 +1,7 @@
 """Local Schema Intelligence provider — uses LLM for semantic reasoning."""
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 
 from app.core.logging import get_logger
 from app.core.enums import SchemaIntelligenceDecision
@@ -18,6 +19,12 @@ logger = get_logger(__name__)
 
 # Maximum columns per LLM batch to avoid token limits
 _MAX_BATCH_SIZE = 30
+
+# Batches are independent LLM calls (different columns, same domain_context) --
+# run them concurrently instead of one-at-a-time. Capped, not unbounded, to
+# stay a safe multiple of what a single-batch burst already sends to
+# Groq/Azure rather than firing every batch of a very wide dataset at once.
+_MAX_PARALLEL_BATCHES = 5
 
 
 class LocalSchemaIntelligenceProvider:
@@ -47,15 +54,26 @@ class LocalSchemaIntelligenceProvider:
                 fallback_used=False,
             )
 
-        # Process in batches
+        # Process in batches. Each batch is an independent LLM call (a
+        # disjoint slice of columns against the same domain_context), so
+        # they run concurrently — a 141-column dataset's 5 batches complete
+        # in roughly one batch's latency instead of five.
         all_results: list[ColumnAnalysisResult] = []
         model_name = ""
         prompt_version = "si-v1"
 
-        for batch_start in range(0, len(columns), _MAX_BATCH_SIZE):
-            batch = columns[batch_start:batch_start + _MAX_BATCH_SIZE]
-            batch_results, batch_model = self._analyze_batch(batch, domain_context)
+        batches = [
+            columns[start:start + _MAX_BATCH_SIZE]
+            for start in range(0, len(columns), _MAX_BATCH_SIZE)
+        ]
 
+        with ThreadPoolExecutor(max_workers=min(len(batches), _MAX_PARALLEL_BATCHES)) as executor:
+            futures = [executor.submit(self._analyze_batch, batch, domain_context) for batch in batches]
+            batch_outcomes = [future.result() for future in futures]  # blocks here, in submission order
+
+        for batch_start, batch, (batch_results, batch_model) in zip(
+            range(0, len(columns), _MAX_BATCH_SIZE), batches, batch_outcomes
+        ):
             if batch_results is None:
                 # LLM failed — use deterministic fallback for entire batch
                 logger.warning(

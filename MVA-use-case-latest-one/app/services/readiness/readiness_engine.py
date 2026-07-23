@@ -20,6 +20,8 @@ class ReadinessResult:
         recommendations: list[dict[str, Any]],
         evidence: list[dict[str, Any]],
         weight_profile_version: str,
+        dataset_score: float | None = None,
+        task_compatibility_score: float | None = None,
     ):
         self.assessment_type = assessment_type
         self.score = score
@@ -29,6 +31,17 @@ class ReadinessResult:
         self.recommendations = recommendations
         self.evidence = evidence
         self.weight_profile_version = weight_profile_version
+        # dataset_score: the question-independent component, 0-100, scaled
+        # against only the dataset-only points actually assessed (so a
+        # skipped dimension doesn't silently drag this down). None only
+        # when literally nothing dataset-only was assessable.
+        # task_compatibility_score: the question-dependent component, 0-100.
+        # None when no business_question/feature_recommendation was ever in
+        # play -- there's no task to be compatible with, not a score of 0.
+        # `score` itself is unchanged by this split -- same formula, same
+        # value as before; these two are purely additive transparency.
+        self.dataset_score = dataset_score
+        self.task_compatibility_score = task_compatibility_score
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -40,6 +53,10 @@ class ReadinessResult:
             "recommendations": self.recommendations,
             "evidence": self.evidence,
             "weight_profile_version": self.weight_profile_version,
+            "dataset_score": round(self.dataset_score, 2) if self.dataset_score is not None else None,
+            "task_compatibility_score": (
+                round(self.task_compatibility_score, 2) if self.task_compatibility_score is not None else None
+            ),
         }
 
 
@@ -167,39 +184,69 @@ class ReadinessEngine:
             recommendations=recommendations,
             evidence=evidence,
             weight_profile_version="analytics-v1",
+            # Entirely dataset-driven already -- no business_question input
+            # anywhere in this method -- so dataset_score is just score,
+            # and there's no task component to report.
+            dataset_score=score,
+            task_compatibility_score=None,
         )
 
     def _assess_ml(self, profiles, quality_results, grain_columns, row_count, feature_recommendation=None) -> ReadinessResult:
-        """ML readiness emphasizes completeness, feature coverage, identifier contamination."""
+        """ML readiness emphasizes completeness, feature coverage, identifier contamination.
+
+        Tracked as two point pools that sum to the same overall `score` this
+        method has always produced (unchanged formula/value) — dataset_pts
+        for structural, question-independent facts about the file itself,
+        task_pts for anything that depends on feature_recommendation (which
+        only exists in its real form when a business_question was asked).
+        Each pool also tracks its own max-possible points so dataset_score/
+        task_compatibility_score can be reported on a fair 0-100 scale
+        regardless of which dimensions happened to be assessable."""
         score = 0.0
+        dataset_pts = 0.0
+        dataset_max = 0.0
+        task_pts = 0.0
+        task_max = 0.0
         strengths: list[dict[str, Any]] = []
         blockers: list[dict[str, Any]] = []
         recommendations: list[dict[str, Any]] = []
         evidence: list[dict[str, Any]] = []
 
-        # Completeness
+        # Completeness — dataset-only
         comp = self._get_quality_score(quality_results, "completeness")
         if comp is not None:
-            score += comp * 20
+            pts = comp * 20
+            score += pts
+            dataset_pts += pts
+            dataset_max += 20
             if comp >= 0.9:
                 strengths.append({"code": "HIGH_COMPLETENESS", "dimension": "completeness", "value": comp})
             evidence.append({"dimension": "completeness", "value": comp})
 
-        # Consistency
+        # Consistency — dataset-only
         con = self._get_quality_score(quality_results, "consistency")
         if con is not None:
-            score += con * 15
+            pts = con * 15
+            score += pts
+            dataset_pts += pts
+            dataset_max += 15
             evidence.append({"dimension": "consistency", "value": con})
 
         # Feature coverage — prefer the actual target/feature/drop classification
         # (weighted by usefulness) over the blind "every non-identifier column
-        # counts" heuristic, when one is available.
+        # counts" heuristic, when one is available. The former is inherently
+        # task-dependent (it's literally the question's own feature plan);
+        # the latter is a dataset-only structural fallback.
         recommended_features = (feature_recommendation or {}).get("feature_columns")
-        if recommended_features is not None:
+        has_task = recommended_features is not None
+        if has_task:
             usefulness_weight = {"high": 1.0, "medium": 0.6, "low": 0.25}
             weighted = sum(usefulness_weight.get(f.get("usefulness"), 0.5) for f in recommended_features)
             feature_ratio = weighted / max(len(profiles), 1)
-            score += min(15.0, feature_ratio * 15)
+            pts = min(15.0, feature_ratio * 15)
+            score += pts
+            task_pts += pts
+            task_max += 15
             evidence.append({"dimension": "feature_coverage", "value": round(feature_ratio, 3), "source": "feature_recommendation"})
 
             target_column = feature_recommendation.get("target_column")
@@ -216,44 +263,67 @@ class ReadinessEngine:
         else:
             non_id_cols = [p for p in profiles if p.physical_name not in grain_columns]
             feature_ratio = len(non_id_cols) / max(len(profiles), 1)
-            score += feature_ratio * 15
+            pts = feature_ratio * 15
+            score += pts
+            dataset_pts += pts
+            dataset_max += 15
             evidence.append({"dimension": "feature_coverage", "value": round(feature_ratio, 3)})
             recommended_drops = set(grain_columns)
 
-        # Identifier contamination check
+        # Identifier contamination check — attributed to whichever pool
+        # recommended_drops came from (feature_recommendation's own
+        # drop_columns when a task is in play, else the dataset-only grain).
         id_contamination = len(recommended_drops) / max(len(profiles), 1)
+        penalty = 0.0
         if id_contamination > 0.3:
             blockers.append({"code": "IDENTIFIER_CONTAMINATION", "value": round(id_contamination, 3)})
-            score -= 10
+            penalty = 10.0
         elif id_contamination > 0:
             recommendations.append({"code": "EXCLUDE_IDENTIFIER_FEATURES", "priority": "high"})
+        score -= penalty
+        if has_task:
+            task_pts -= penalty
+        else:
+            dataset_pts -= penalty
 
-        # Row count adequacy
+        # Row count adequacy — dataset-only
         if row_count >= 10000:
-            score += 15
+            pts = 15.0
             strengths.append({"code": "ADEQUATE_ROW_COUNT", "value": row_count})
         elif row_count >= 1000:
-            score += 10
+            pts = 10.0
         elif row_count >= 100:
-            score += 5
+            pts = 5.0
         else:
+            pts = 0.0
             blockers.append({"code": "INSUFFICIENT_ROWS", "value": row_count})
+        score += pts
+        dataset_pts += pts
+        dataset_max += 15
 
-        # Cardinality health
+        # Cardinality health — dataset-only
         high_card = sum(1 for p in profiles if p.cardinality_ratio > 0.9 and p.physical_name not in grain_columns)
         if high_card == 0:
-            score += 10
+            pts = 10.0
         else:
             recommendations.append({"code": "HIGH_CARDINALITY_FEATURES", "value": high_card, "priority": "medium"})
-            score += 5
+            pts = 5.0
+        score += pts
+        dataset_pts += pts
+        dataset_max += 10
 
-        # Uniqueness
+        # Uniqueness — dataset-only
         uniq = self._get_quality_score(quality_results, "uniqueness")
         if uniq is not None:
-            score += uniq * 10
+            pts = uniq * 10
+            score += pts
+            dataset_pts += pts
+            dataset_max += 10
             evidence.append({"dimension": "uniqueness", "value": uniq})
 
         score = max(0.0, min(100.0, score))
+        dataset_score = max(0.0, min(100.0, dataset_pts / dataset_max * 100)) if dataset_max > 0 else None
+        task_compatibility_score = max(0.0, min(100.0, task_pts / task_max * 100)) if has_task and task_max > 0 else None
         return ReadinessResult(
             assessment_type=ReadinessType.ML,
             score=score,
@@ -263,6 +333,8 @@ class ReadinessEngine:
             recommendations=recommendations,
             evidence=evidence,
             weight_profile_version="ml-v1",
+            dataset_score=dataset_score,
+            task_compatibility_score=task_compatibility_score,
         )
 
     def _assess_llm(self, profiles, quality_results, description_coverage, feature_recommendation=None) -> ReadinessResult:
@@ -310,14 +382,27 @@ class ReadinessEngine:
         score += min(15, description_coverage * 15)
 
         score = max(0.0, min(100.0, score))
+        # Everything above is dataset-only (description_coverage,
+        # semantic_quality, schema_clarity, consistent_terminology,
+        # sample_availability, context-rich metadata) and already sums to
+        # a 100-point scale on its own, so it doubles directly as
+        # dataset_score — no separate accumulator needed like _assess_ml's
+        # variable-max dimensions.
+        dataset_score = score
 
         # Question-suitability boost — additive only, and only when the LLM
         # sub-agent actually ran (recommended_approach == "llm"); never applies
-        # to (and never lowers the score for) question-less runs.
+        # to (and never lowers the score for) question-less runs. This is the
+        # only task-dependent component, so task_compatibility_score is just
+        # the underlying confidence rescaled to 0-100 -- the boost itself is
+        # capped at 10 points, but the *compatibility* is 0-100 like every
+        # other score here.
+        task_compatibility_score = None
         if feature_recommendation and feature_recommendation.get("recommended_approach") == "llm":
             confidence = feature_recommendation.get("confidence") or 0.0
             boost = min(10.0, confidence * 10)
             score = min(100.0, score + boost)
+            task_compatibility_score = max(0.0, min(100.0, confidence * 100))
             strengths.append({"code": "QUESTION_SUITABLE_FOR_LLM", "value": round(confidence, 3)})
             evidence.append({"dimension": "recommended_approach", "value": "llm", "confidence": round(confidence, 3)})
 
@@ -330,6 +415,8 @@ class ReadinessEngine:
             recommendations=recommendations,
             evidence=evidence,
             weight_profile_version="llm-v1",
+            dataset_score=dataset_score,
+            task_compatibility_score=task_compatibility_score,
         )
 
     def _get_quality_score(self, quality_results: list[dict[str, Any]], dimension: str) -> float | None:

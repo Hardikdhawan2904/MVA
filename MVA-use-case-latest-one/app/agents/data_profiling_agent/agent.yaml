@@ -29,7 +29,11 @@ agent:
 
   # ── LLM config ──────────────────────────────────────────────────────────────
   llm:
-    provider: Groq
+    provider: from_settings (LLM_PROVIDER)   # local/openai/groq, wrapped in Azure
+                            # OpenAI-first when AZURE_OPENAI_* is configured — see
+                            # app/services/llm/factory.py::create_llm_provider().
+                            # Never required, only preferred; zero behavior change
+                            # when Azure isn't configured.
     model: from_settings   # Settings.llm_model — shared across every LLM-touching
                             # node/sub-agent in this service, not duplicated per file
     burst_cooldown_seconds: from_settings   # Settings.llm_burst_cooldown_seconds

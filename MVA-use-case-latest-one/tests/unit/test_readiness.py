@@ -96,3 +96,79 @@ class TestReadinessEngine:
         ml_dims = [e.get("dimension") for e in ml.evidence]
         assert "completeness" in analytics_dims
         assert "completeness" in ml_dims
+
+    def test_analytics_readiness_dataset_score_mirrors_score(self, profiler, engine):
+        """Analytics readiness has no task-dependent input at all (no
+        feature_recommendation is ever passed to _assess_analytics) --
+        dataset_score must equal score exactly, and there's no task to
+        report compatibility with."""
+        df = pd.DataFrame({"x": [str(i) for i in range(50)]})
+        profiles = profiler.profile_all(df, ["x"])
+        results = engine.assess_all(profiles, [], [], False, 0, 0, 0.0, 50)
+        analytics = next(r for r in results if r.assessment_type == ReadinessType.ANALYTICS)
+        assert analytics.dataset_score == analytics.score
+        assert analytics.task_compatibility_score is None
+
+    def test_ml_readiness_no_feature_recommendation_has_no_task_score(self, profiler, engine):
+        """No business_question -> feature_recommendation=None -> nothing
+        task-dependent was ever evaluated, so task_compatibility_score must
+        be None (there's no task), not 0 (which would read as 'bad task
+        fit')."""
+        df = pd.DataFrame({"x": [str(i) for i in range(100)]})
+        profiles = profiler.profile_all(df, ["x"])
+        results = engine.assess_all(profiles, [], [], False, 0, 0, 0.5, 100, feature_recommendation=None)
+        ml = next(r for r in results if r.assessment_type == ReadinessType.ML)
+        assert ml.task_compatibility_score is None
+        assert ml.dataset_score is not None
+        assert 0.0 <= ml.dataset_score <= 100.0
+
+    def test_ml_readiness_with_feature_recommendation_splits_dataset_and_task(self, profiler, engine):
+        """With a real feature_recommendation (a business_question was
+        asked), both components must be present and independently in
+        [0, 100] -- and `score` itself (already covered by the existing
+        exact-value tests elsewhere) must be unaffected by this split."""
+        df = pd.DataFrame({
+            "revenue": [str(i) for i in range(100)],
+            "id": [f"R{i}" for i in range(100)],
+        })
+        profiles = profiler.profile_all(df, ["revenue", "id"])
+        feature_recommendation = {
+            "target_column": "revenue",
+            "feature_columns": [{"column": "revenue", "usefulness": "high"}],
+            "drop_columns": [{"column": "id"}],
+            "approach_reasoning": "numeric target",
+        }
+        results = engine.assess_all(
+            profiles, [], ["id"], False, 1, 0, 0.5, 100, feature_recommendation=feature_recommendation,
+        )
+        ml = next(r for r in results if r.assessment_type == ReadinessType.ML)
+        assert ml.dataset_score is not None
+        assert ml.task_compatibility_score is not None
+        assert 0.0 <= ml.dataset_score <= 100.0
+        assert 0.0 <= ml.task_compatibility_score <= 100.0
+
+    def test_llm_readiness_task_compatibility_reflects_confidence(self, profiler, engine):
+        """task_compatibility_score for LLM readiness is the underlying
+        recommendation confidence rescaled to 0-100 -- distinct from the
+        boost itself, which is capped at 10 points."""
+        df = pd.DataFrame({"x": [str(i) for i in range(50)]})
+        profiles = profiler.profile_all(df, ["x"])
+        feature_recommendation = {"recommended_approach": "llm", "confidence": 0.85}
+        results = engine.assess_all(
+            profiles, [], [], False, 0, 0, 0.8, 50, feature_recommendation=feature_recommendation,
+        )
+        llm = next(r for r in results if r.assessment_type == ReadinessType.LLM)
+        assert llm.task_compatibility_score == pytest.approx(85.0)
+
+    def test_llm_readiness_no_task_when_approach_is_not_llm(self, profiler, engine):
+        """The boost (and therefore task_compatibility_score) only applies
+        when recommended_approach == 'llm' -- an 'ml'-approach question
+        must leave task_compatibility_score as None, not 0."""
+        df = pd.DataFrame({"x": [str(i) for i in range(50)]})
+        profiles = profiler.profile_all(df, ["x"])
+        feature_recommendation = {"recommended_approach": "ml", "confidence": 0.9}
+        results = engine.assess_all(
+            profiles, [], [], False, 0, 0, 0.8, 50, feature_recommendation=feature_recommendation,
+        )
+        llm = next(r for r in results if r.assessment_type == ReadinessType.LLM)
+        assert llm.task_compatibility_score is None

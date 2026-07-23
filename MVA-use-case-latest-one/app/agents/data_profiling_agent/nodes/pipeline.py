@@ -292,9 +292,14 @@ class ProfilingGraphNodes:
             "quality_gate_passed": quality_gate_passed,
         }
 
-    def quality_gate_router(self, state: ProfilingState) -> Literal["full", "lightweight"]:
-        """Real conditional edge: skip suggestions/readiness/charts on very poor data."""
-        return "full" if state.get("quality_gate_passed", True) else "lightweight"
+    def quality_gate_router(self, state: ProfilingState) -> list[str]:
+        """Real conditional edge: skip suggestions/readiness/charts on very poor data.
+        Returns actual node names (not abstract keys) so the "full" path can fan out
+        to both independent ReAct sub-agents at once — see graph.py's docstring for
+        why generate_suggestions/recommend_target_features have no edge between them."""
+        if state.get("quality_gate_passed", True):
+            return ["generate_suggestions", "recommend_target_features"]
+        return ["finalize_lightweight"]
 
     # ── Node 7: rule suggestions (LLM, ReAct tool-calling) ──────────────────
 

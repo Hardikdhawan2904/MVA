@@ -26,3 +26,5 @@ class ReadinessAssessment(Base):
     recommendations_json: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     evidence_json: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     weight_profile_version: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    dataset_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    task_compatibility_score: Mapped[float | None] = mapped_column(Float, nullable=True)

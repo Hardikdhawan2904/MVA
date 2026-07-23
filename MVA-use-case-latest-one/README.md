@@ -19,17 +19,18 @@ Every stage produces typed results. Non-critical failures do not destroy success
 
 ### Prerequisites
 - Python 3.11+
-- PostgreSQL 16 — runs from a shared server used by all agents in the pipeline (see below), not from this repo directly
+- PostgreSQL 16+ — runs from a shared server used by all agents in the pipeline (see below), not from this repo directly
 
 ### Local Development
 
 This project shares one virtual environment with the rest of the pipeline — see the [root README](../README.md). From the repo root:
 
 ```bash
-# Start the shared Postgres server (once)
-cd Shared-Postgres
-docker compose up -d
-cd ..
+# Start the shared Postgres server (once) -- native Windows instance, not Docker;
+# the normal way to do this is just running ..\start-all.ps1, which starts Postgres
+# plus all four services together. To start only Postgres directly:
+& "C:\Program Files\PostgreSQL\17\bin\pg_ctl.exe" -D "C:\PGData\mva-pipeline" status  # check
+& "C:\Program Files\PostgreSQL\17\bin\pg_ctl.exe" -D "C:\PGData\mva-pipeline" start   # start if needed
 
 # Create the shared environment and install (once, for all three services)
 python -m venv venv
@@ -54,6 +55,9 @@ python -m pytest tests/ -v
 
 Note: this repo's own `docker-compose.yml` is a comment-only pointer to the shared
 server above — running `docker-compose up` directly in this directory does nothing.
+The shared server itself moved off Docker entirely (native Postgres instance,
+`C:\PGData\mva-pipeline`, port 5433 unchanged) — the old Docker-based setup
+(`Shared-Postgres/docker-compose.yml`) is kept only as a documented rollback path.
 
 ## API Endpoints
 
@@ -212,8 +216,9 @@ alembic downgrade -1
 | MAX_DATASET_COLUMNS | 200 | Max columns |
 | PROCESSING_TIMEOUT_SECONDS | 120 | Pipeline timeout |
 | MIN_CUBE_GROUP_SIZE | 5 | Small-group suppression |
-| LLM_PROVIDER | local | LLM backend (`local` or `groq`) |
-| LLM_API_KEY | | Groq API key |
+| LLM_PROVIDER | local | LLM backend (`local`, `openai`, or `groq`) — see below, Azure wraps whichever of these is selected when configured |
+| LLM_API_KEY | | Groq API key (used as the fallback when Azure is configured, or the primary path when it isn't) |
+| AZURE_OPENAI_API_KEY / AZURE_OPENAI_ENDPOINT / AZURE_OPENAI_DEPLOYMENT | | Optional. When all three are set, `create_llm_provider()` (`app/services/llm/factory.py`) wraps the selected `LLM_PROVIDER` in a `ChainedLLMProvider([AzureOpenAIProvider, <selected provider>])` — Azure is tried first, falling back to whichever provider `LLM_PROVIDER` names if Azure fails or isn't configured. Same fallback applies to the `feature_target_agent`/`rule_suggestion_agent` sub-agents' own LLM calls (`_build_chat_model()` in each agent's `nodes/pipeline.py`). |
 | LLM_BURST_COOLDOWN_SECONDS | 5 | Delay before the rule-suggestion LLM call, after the schema-intelligence LLM call — Groq's free tier enforces a burst limit tight enough that firing both back-to-back gets rate-limited even with unused quota |
 | LOG_LEVEL | INFO | Logging level |
 

@@ -87,9 +87,15 @@ class TestProfileRunEndpoints:
         assert resp8.status_code == 200
 
     def test_unsupported_domain(self, client, csv_content):
+        # "Insurance" used to be a real 422 case here, but
+        # config/domains/insurance.yaml was added (commit 26aeffc, "add
+        # Insurance domain support") making it a genuinely supported
+        # primary_domain -- this test needs a domain that is actually
+        # absent from config/domains/*.yaml to still exercise the
+        # UNSUPPORTED_DOMAIN path.
         resp = client.post(
             "/api/v1/profile-runs",
-            data={"primary_domain": "Insurance"},
+            data={"primary_domain": "NotARealDomain"},
             files={"file": ("data.csv", csv_content, "text/csv")},
         )
         assert resp.status_code == 422

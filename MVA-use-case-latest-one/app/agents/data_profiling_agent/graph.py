@@ -5,8 +5,8 @@ Topology (fixed edges except where noted):
   validate_and_load → profile_data → schema_intelligence ─┬─(retry)─→ schema_intelligence
                                                             └─(continue)─→ classify_and_build_hierarchy
   classify_and_build_hierarchy → evaluate_business_rules → assess_quality
-  assess_quality ─(quality_gate_router)─┬─"full"───→ generate_suggestions → recommend_target_features
-                                        │              → assess_readiness → generate_charts → finalize → END
+  assess_quality ─(quality_gate_router)─┬─"full"───→ ┬─ generate_suggestions ─────┬─→ assess_readiness
+                                        │             └─ recommend_target_features ┘   → generate_charts → finalize → END
                                         └─"lightweight"→ finalize_lightweight → END
 
 generate_suggestions and recommend_target_features each have their own internal ReAct
@@ -16,6 +16,15 @@ point of view each is a single node, same as schema_intelligence. recommend_targ
 only actually calls its LLM sub-graph when a business_question or target_column was supplied
 in the request; otherwise it computes a deterministic (non-LLM) feature/drop split so
 assess_readiness always has something to work with.
+
+generate_suggestions and recommend_target_features are siblings, not a sequential pair:
+neither reads the other's output (recommend_target_features only reads col_profiles/
+sem_candidates/grain_result/business_question/target_column_override; rule_suggestions
+is only read back out of final state at the very end, never by assess_readiness or
+anything between them). Each is its own multi-turn ReAct loop, so run serially they add;
+LangGraph runs same-superstep nodes with no edge between them concurrently (a thread per
+node for sync graphs), so branching them here turns two additive LLM-loop durations into
+roughly the slower of the two.
 """
 
 import uuid
@@ -81,10 +90,10 @@ def build_profiling_graph(
     g.add_conditional_edges(
         "assess_quality",
         nodes.quality_gate_router,
-        {"full": "generate_suggestions", "lightweight": "finalize_lightweight"},
+        ["generate_suggestions", "recommend_target_features", "finalize_lightweight"],
     )
 
-    g.add_edge("generate_suggestions", "recommend_target_features")
+    g.add_edge("generate_suggestions", "assess_readiness")
     g.add_edge("recommend_target_features", "assess_readiness")
     g.add_edge("assess_readiness", "generate_charts")
     g.add_edge("generate_charts", "finalize")

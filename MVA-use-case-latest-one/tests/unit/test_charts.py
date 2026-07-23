@@ -115,6 +115,24 @@ class TestChartCandidateGenerator:
         profiling = [c for c in charts if c.category in (ChartCategory.PROFILING, ChartCategory.QUALITY)]
         assert len(profiling) >= 1
 
+    def test_resolve_role_hierarchy_dimension_picks_top_level_not_file_order(self, chart_gen):
+        """Regression test for a bug caught via live testing: with
+        hierarchy_levels=["region", "country_name"], _resolve_role picked
+        whichever hierarchy column appeared first in the dataset's raw
+        column order (country_name, an earlier CSV column than region in
+        the real fixture) instead of the hierarchy's actual top level.
+        The title-templating code always uses hierarchy_levels[0] for
+        "{hierarchy_level}" regardless -- confirmed live, this produced a
+        chart titled "Premium by region" whose bars were actually 6
+        individual countries, not the ~3-4 real region values."""
+        from types import SimpleNamespace
+        country_col = SimpleNamespace(physical_name="country_name")
+        region_col = SimpleNamespace(physical_name="region")
+        # country_name listed before region, mirroring the real CSV's column order
+        columns = [(country_col, None), (region_col, None)]
+        result = chart_gen._resolve_role("hierarchy_dimension", columns, ["region", "country_name"])
+        assert result[0].physical_name == "region"
+
 
 class TestAggregationEngine:
     def test_categorical_aggregation(self, agg_engine):
