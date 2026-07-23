@@ -125,21 +125,44 @@ def test_root_cause_without_ml_evidence_does_not_mention_xgboost():
 
 def test_narration_groq_error_is_distinct_from_never_attempted():
     """The core nuance this feature exists to capture: a passed llm_readiness
-    gate whose Groq call itself failed must not be reported the same way as
+    gate whose LLM call(s) failed must not be reported the same way as
     a gate that never passed in the first place."""
     state = {
         "intent": "show_kpi",
         "evidence": {"kpi": "x"},
         "response": "...",
-        "llm_engine_used": "Template Formatter (Groq error)",
+        "llm_engine_used": "Template Formatter (Azure + Groq failed)",
         "llm_readiness_score": 95.0,  # gate passed
     }
     trace, summary = _build_execution_trace(state, elapsed_seconds=0.2)
     narration = next(s for s in trace if s["step"] == "narration")
     assert narration["gate"]["passed"] is True
-    assert narration["engine"] == "Template Formatter (Groq error)"
-    assert "Groq call itself failed" in narration["reason"]
+    assert narration["engine"] == "Template Formatter (Azure + Groq failed)"
+    assert "LLM call(s) failed" in narration["reason"]
+    assert "Template Formatter (Azure + Groq failed)" in narration["reason"]
     assert summary["fallback_used"] is True
+
+
+def test_narration_azure_success_is_not_mislabeled_as_groq_failure():
+    """Regression guard: before this fix, any llm_engine_used other than the
+    literal string "Groq" fell into the "Groq call itself failed" branch --
+    including "Azure OpenAI" on a clean success with zero fallback. Azure
+    succeeding must be reported as a success, not as a failure that never
+    happened."""
+    state = {
+        "intent": "show_kpi",
+        "evidence": {"kpi": "x"},
+        "response": "...",
+        "llm_engine_used": "Azure OpenAI",
+        "llm_readiness_score": 95.0,  # gate passed
+    }
+    trace, summary = _build_execution_trace(state, elapsed_seconds=0.2)
+    narration = next(s for s in trace if s["step"] == "narration")
+    assert narration["gate"]["passed"] is True
+    assert narration["engine"] == "Azure OpenAI"
+    assert "narrated by Azure OpenAI" in narration["reason"]
+    assert "failed" not in narration["reason"]
+    assert summary["fallback_used"] is False
 
 
 def test_narration_readiness_too_low_is_a_clean_never_attempted():

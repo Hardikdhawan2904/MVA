@@ -13,7 +13,10 @@ root-cause evidence), contradicting agent.yaml's own confidence_rules.
 
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+import httpx
 
 from app.services.tools.explanation_tool import ExplanationTool
 
@@ -144,3 +147,76 @@ def test_template_format_renders_group_comparison_not_just_scalar_fields():
     assert "Lowest" in response
     # Still renders the scalar fields too — additive, not a replacement.
     assert "Group Count" in response
+
+
+# ── Azure OpenAI first, Groq fallback, template last ────────────────────────
+
+def _mock_httpx_response(content: str) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={"choices": [{"message": {"content": content}}]},
+        request=httpx.Request("POST", "https://example.openai.azure.com/openai/v1/chat/completions"),
+    )
+
+
+def test_azure_openai_used_when_configured_and_succeeds():
+    tool = ExplanationTool(llm_readiness_score=99.0)
+    with patch("app.services.tools.explanation_tool.AZURE_OPENAI_API_KEY", "fake-key"), \
+         patch("app.services.tools.explanation_tool.AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com"), \
+         patch("app.services.tools.explanation_tool.AZURE_OPENAI_DEPLOYMENT", "gpt-4o"), \
+         patch("httpx.post", return_value=_mock_httpx_response("## Summary\nAzure said hi.\n## Confidence\nignored")) as mock_post:
+        response = tool.narrate({"variance_amount": 5}, "Why?")
+
+    assert tool.last_engine_used == "Azure OpenAI"
+    assert "Azure said hi." in response
+    mock_post.assert_called_once()
+    assert "openai/v1/chat/completions" in mock_post.call_args[0][0]
+    assert mock_post.call_args[1]["headers"]["api-key"] == "fake-key"
+
+
+def test_falls_back_to_groq_when_azure_configured_but_fails():
+    tool = ExplanationTool(llm_readiness_score=99.0)
+    tool._client = MagicMock()
+    tool._client.chat.completions.create.return_value.choices = [
+        MagicMock(message=MagicMock(content="## Summary\nGroq said hi.\n## Confidence\nignored"))
+    ]
+    with patch("app.services.tools.explanation_tool.AZURE_OPENAI_API_KEY", "fake-key"), \
+         patch("app.services.tools.explanation_tool.AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com"), \
+         patch("app.services.tools.explanation_tool.AZURE_OPENAI_DEPLOYMENT", "gpt-4o"), \
+         patch("httpx.post", side_effect=httpx.ConnectError("refused")):
+        response = tool.narrate({"variance_amount": 5}, "Why?")
+
+    assert tool.last_engine_used == "Groq"
+    assert "Groq said hi." in response
+    tool._client.chat.completions.create.assert_called_once()
+
+
+def test_azure_unconfigured_never_calls_httpx_goes_straight_to_groq():
+    tool = ExplanationTool(llm_readiness_score=99.0)
+    tool._client = MagicMock()
+    tool._client.chat.completions.create.return_value.choices = [
+        MagicMock(message=MagicMock(content="## Summary\nGroq only.\n## Confidence\nignored"))
+    ]
+    with patch("app.services.tools.explanation_tool.AZURE_OPENAI_API_KEY", ""), \
+         patch("httpx.post") as mock_post:
+        response = tool.narrate({"variance_amount": 5}, "Why?")
+
+    mock_post.assert_not_called()
+    assert tool.last_engine_used == "Groq"
+    assert "Groq only." in response
+
+
+def test_azure_configured_alone_without_groq_client_still_narrates():
+    """The gate in narrate() must consider Azure being configured on its
+    own, not only whether the Groq client was constructed -- otherwise
+    Azure-only setups (no GROQ_API_KEY) would silently never be tried."""
+    tool = ExplanationTool(llm_readiness_score=99.0)
+    tool._client = None  # simulate no GROQ_API_KEY configured, regardless of this environment's own .env
+    with patch("app.services.tools.explanation_tool.AZURE_OPENAI_API_KEY", "fake-key"), \
+         patch("app.services.tools.explanation_tool.AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com"), \
+         patch("app.services.tools.explanation_tool.AZURE_OPENAI_DEPLOYMENT", "gpt-4o"), \
+         patch("httpx.post", return_value=_mock_httpx_response("## Summary\nAzure alone.\n## Confidence\nignored")):
+        response = tool.narrate({"variance_amount": 5}, "Why?")
+
+    assert tool.last_engine_used == "Azure OpenAI"
+    assert "Azure alone." in response

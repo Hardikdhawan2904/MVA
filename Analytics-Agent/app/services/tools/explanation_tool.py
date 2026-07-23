@@ -14,8 +14,11 @@ import json
 import logging
 import re
 
+import httpx
+
 from app.config import (
     GROQ_API_KEY, GROQ_MODEL, GROQ_TEMPERATURE, GROQ_MAX_TOKENS,
+    AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT,
     AGENT_ROLE, SYSTEM_PROMPT_CFG, LLM_READINESS_THRESHOLD,
 )
 
@@ -114,20 +117,23 @@ class ExplanationTool:
         # runs, rather than each path (re-)deriving its own answer.
         confidence_level, confidence_text = self._compute_confidence(evidence)
 
-        if self._client and self.llm_readiness_score >= LLM_READINESS_THRESHOLD:
-            return self._call_groq(evidence, query_context, confidence_level, confidence_text)
+        azure_configured = bool(AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_DEPLOYMENT)
+        has_llm_path = self._client or azure_configured
 
-        if self._client:
+        if has_llm_path and self.llm_readiness_score >= LLM_READINESS_THRESHOLD:
+            return self._call_llm(evidence, query_context, confidence_level, confidence_text)
+
+        if has_llm_path:
             logger.info(
                 f"LLM readiness score ({self.llm_readiness_score:.2f}) below threshold "
-                f"({LLM_READINESS_THRESHOLD}) — using template formatter instead of Groq."
+                f"({LLM_READINESS_THRESHOLD}) — using template formatter instead of an LLM."
             )
         self.last_engine_used = "Template Formatter"
         return self._template_format(evidence, query_context, confidence_text)
 
-    # ── Groq LLM Path ─────────────────────────────────────────────────────────
+    # ── LLM Path (Azure OpenAI, then Groq) ──────────────────────────────────────
 
-    def _call_groq(
+    def _call_llm(
         self, evidence: dict, query_context: str, confidence_level: str, confidence_text: str,
     ) -> str:
         evidence_str = json.dumps({**evidence, "confidence_level": confidence_level}, indent=2, default=str)
@@ -154,13 +160,22 @@ If prior conversation context is present above, use it only to resolve
 what the current question refers to (e.g. an implied KPI or period) — never
 narrate facts from a prior turn as if they were computed for this one."""
 
+        messages = [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": user_message},
+        ]
+
+        narrative = self._call_azure_openai(messages)
+        if narrative is not None:
+            narrative = self._enforce_confidence_section(narrative, confidence_text)
+            logger.info(f"Azure OpenAI narration complete: {len(narrative)} chars")
+            self.last_engine_used = "Azure OpenAI"
+            return narrative
+
         try:
             response = self._client.chat.completions.create(
                 model=GROQ_MODEL,
-                messages=[
-                    {"role": "system",  "content": _SYSTEM_PROMPT},
-                    {"role": "user",    "content": user_message},
-                ],
+                messages=messages,
                 temperature=GROQ_TEMPERATURE,
                 max_tokens=GROQ_MAX_TOKENS,
             )
@@ -171,8 +186,35 @@ narrate facts from a prior turn as if they were computed for this one."""
             return narrative
         except Exception as e:
             logger.error(f"Groq API error: {e} — falling back to template formatter")
-            self.last_engine_used = "Template Formatter (Groq error)"
+            azure_configured = bool(AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_DEPLOYMENT)
+            label = "Azure + Groq failed" if azure_configured else "Groq failed, Azure not configured"
+            self.last_engine_used = f"Template Formatter ({label})"
             return self._template_format(evidence, query_context, confidence_text)
+
+    @staticmethod
+    def _call_azure_openai(messages: list[dict]) -> str | None:
+        """Best-effort first attempt before Groq -- returns None (never
+        raises) on any failure or when unconfigured, so the caller's
+        existing Groq call always remains the real fallback path."""
+        if not (AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_DEPLOYMENT):
+            return None
+        try:
+            response = httpx.post(
+                f"{AZURE_OPENAI_ENDPOINT.rstrip('/')}/openai/v1/chat/completions",
+                headers={"api-key": AZURE_OPENAI_API_KEY, "Content-Type": "application/json"},
+                json={
+                    "model": AZURE_OPENAI_DEPLOYMENT,
+                    "messages": messages,
+                    "temperature": GROQ_TEMPERATURE,
+                    "max_tokens": GROQ_MAX_TOKENS,
+                },
+                timeout=30.0,
+            )
+            response.raise_for_status()
+            return response.json()["choices"][0]["message"]["content"]
+        except Exception as e:
+            logger.warning(f"Azure OpenAI call failed: {e} — falling back to Groq")
+            return None
 
     @staticmethod
     def _enforce_confidence_section(narrative: str, confidence_text: str) -> str:

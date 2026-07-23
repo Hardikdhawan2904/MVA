@@ -255,6 +255,32 @@ def test_trend_analyzer_reports_direction():
     assert ev.evidence["data_points"] == 60
 
 
+def test_trend_analyzer_aggregates_multiple_rows_per_date():
+    """Regression guard: before this fix, TrendAnalyzer fed AnalyticsTool.trend()
+    the raw multi-row df directly, so first_value/last_value/direction came
+    from two arbitrary individual rows instead of a real per-date total --
+    confirmed live on a 20-store dataset where this produced a "-89.78%
+    decreasing" headline while actual daily total revenue was roughly flat.
+    This fixture has 2 rows per date; data_points must reflect the 3 unique
+    dates (not 6 raw rows), and first_value/last_value must be that date's
+    summed total, not one row's raw value."""
+    df = pd.DataFrame({
+        "order_date": pd.to_datetime([
+            "2023-01-01", "2023-01-01",
+            "2023-01-02", "2023-01-02",
+            "2023-01-03", "2023-01-03",
+        ]),
+        "revenue": [100, 50, 80, 80, 40, 260],
+    })
+    ctx = _fixture_context(df)
+    selected = _model_for("trend", "Trend (linear regression over time)")
+    ev = TrendAnalyzer().execute(df, ctx, _scheduled("trend", ["order_date", "revenue"]), selected)
+    assert ev.evidence["data_points"] == 3
+    assert ev.evidence["first_value"] == 150  # 100 + 50
+    assert ev.evidence["last_value"] == 300   # 40 + 260
+    assert ev.evidence["direction"] == "increasing"
+
+
 def test_ranking_analyzer_returns_top_n():
     df, ctx = _fixture_df(), _fixture_context(_fixture_df())
     selected = _model_for("ranking", "Ranking")
@@ -507,6 +533,41 @@ def test_root_cause_correlation_mode_narrows_to_heuristic_driver_named_columns()
     assert ev.evidence["candidate_pool"] == "heuristic_driver_named_columns"
     drivers = {d["driver"] for d in ev.evidence["driver_breakdown"]}
     assert drivers == {"region_variance"}  # "cost" and "unrelated_metric" excluded once a driver-named column exists
+
+
+def test_root_cause_correlation_mode_excludes_metrics_own_budget_counterpart():
+    """Regression test for a bug caught via live testing against a Customer
+    dataset with no domain plugin: correlation-based mode named
+    "revenue_budget" the #1 driver of "why is revenue_actual below
+    budget" at correlation 0.9977 -- true but nearly tautological, since
+    actual/budget are highly correlated by construction, not because the
+    budget column "caused" the variance. revenue_budget must be excluded
+    from revenue_actual's own candidate drivers; a genuinely independent
+    metric (marketing_spend) must still be considered."""
+    rng = np.random.default_rng(7)
+    n = 60
+    revenue_actual = rng.normal(1000, 100, n)
+    df = pd.DataFrame({
+        "revenue_actual": revenue_actual,
+        "revenue_budget": revenue_actual * 0.95 + rng.normal(0, 10, n),  # naturally near-perfectly correlated
+        "marketing_spend": revenue_actual * 0.1 + 5,  # independent-but-correlated metric, must survive
+    })
+    ctx = DatasetContext(
+        row_count=n, column_count=3,
+        columns=[
+            ColumnContext(name="revenue_actual", semantic_role=SEMANTIC_ROLE_METRIC),
+            ColumnContext(name="revenue_budget", semantic_role=SEMANTIC_ROLE_METRIC),
+            ColumnContext(name="marketing_spend", semantic_role=SEMANTIC_ROLE_METRIC),
+        ],
+        context_source="local_fallback",
+    )
+
+    selected = _model_for("root_cause", "Deterministic Driver Decomposition")
+    ev = RootCauseAnalyzer().execute(df, ctx, _scheduled("root_cause", ["revenue_actual"]), selected)
+
+    drivers = {d["driver"] for d in ev.evidence["driver_breakdown"]}
+    assert "revenue_budget" not in drivers
+    assert "marketing_spend" in drivers
 
 
 def test_kpi_discovered_root_cause_falls_through_to_correlation_not_a_trivial_self_explanation():

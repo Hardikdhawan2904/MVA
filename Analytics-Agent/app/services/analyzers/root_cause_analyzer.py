@@ -62,6 +62,25 @@ from app.services.models_registry.model_selector import SelectedModel
 # triggers labeled mode by itself; see the module docstring.
 _HEURISTIC_DRIVER_NAME_RE = re.compile(r"variance|driver|contribution|impact", re.IGNORECASE)
 
+# Same qualifier suffixes BusinessQuestionInterpreter._base_phrase strips for
+# question-to-column matching -- reused here to recognize a candidate driver
+# column as the *same* metric's own budget/prior-year/forecast counterpart
+# (e.g. revenue_budget for revenue_actual) rather than an independent
+# driver. Correlating a metric against its own budget baseline is nearly
+# tautological (they're highly correlated by construction, not because the
+# budget "caused" the variance) -- confirmed live where a correlation-based
+# root cause named "revenue_budget" the #1 driver of "why is revenue actual
+# below budget", at correlation 0.9977.
+_QUALIFIER_SUFFIX_RE = re.compile(
+    r"\b(actual|budget|forecast|prior[_ ]year|ytd|ratio|rate|amount|pct|percent)\b", re.IGNORECASE,
+)
+
+
+def _base_metric_name(column_name: str) -> str:
+    normalized = column_name.replace("_", " ").lower()
+    stripped = _QUALIFIER_SUFFIX_RE.sub("", normalized)
+    return re.sub(r"\s+", " ", stripped).strip()
+
 
 class RootCauseAnalyzer(Analyzer):
     analysis_type = "root_cause"
@@ -105,6 +124,16 @@ class RootCauseAnalyzer(Analyzer):
             return {"error": f"Root cause metric column not found in data: {metric_col!r}"}
 
         all_candidates = [c for c in numeric_columns(dataset_context, exclude={metric_col}) if c in df.columns]
+
+        # Drop the metric's own budget/prior-year/forecast counterpart(s),
+        # if any -- e.g. revenue_budget for revenue_actual. Only applied
+        # when the metric column actually has a meaningful base name left
+        # after stripping qualifiers (guards against every column
+        # collapsing to "" and excluding each other).
+        metric_base = _base_metric_name(metric_col)
+        if metric_base:
+            all_candidates = [c for c in all_candidates if _base_metric_name(c) != metric_base]
+
         if not all_candidates:
             return {"error": "No candidate driver columns available for correlation-based root cause analysis."}
 

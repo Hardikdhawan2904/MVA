@@ -59,9 +59,16 @@ TEST_CASES = [
     {
         "id": 5,
         "name": "YoY Variance (Prior Year)",
-        "query": "Compare Net Written Premium vs prior year for EMEA in Q2 2025",
+        # Uses Gross Written Premium, not Net Written Premium: NWP's curated
+        # KPI definition (kpi_definitions.json) has no prior_year_column --
+        # the dataset genuinely has no net_written_premium_prior_year column,
+        # so a prior-year question about NWP correctly falls back to a
+        # budget-only answer with no "prior year" text at all. That's
+        # correct system behavior, not something to test around. GWP does
+        # have a real prior_year_column, so it actually exercises this path.
+        "query": "Compare Gross Written Premium vs prior year for EMEA in Q2 2025",
         "ml_readiness": 99.75,
-        "checks": ["net written premium", "prior year", "emea", "q2", "2025"]
+        "checks": ["gross written premium", "prior year", "emea", "q2", "2025"]
     },
     {
         "id": 6,
@@ -100,7 +107,14 @@ TEST_CASES = [
         "name": "ML Forecast (Fallback)",
         "query": "Forecast underwriting result for next 6 months",
         "ml_readiness": 50.0,
-        "checks": ["underwriting result", "readiness score", "trend"]
+        # "readiness score" was too literal a phrase to require -- the LLM
+        # narrator (esp. Azure gpt-4o) reliably explains the ML-readiness
+        # gate in its own words ("ML readiness being below the required
+        # threshold") without using that exact two-word phrase. "readiness"
+        # alone is still a genuine signal (the gate was mentioned at all)
+        # without pinning down its phrasing, same rationale as case 8's
+        # accept-either pattern below.
+        "checks": ["underwriting result", "readiness", "trend"]
     },
     {
         "id": 11,

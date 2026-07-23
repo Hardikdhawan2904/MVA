@@ -161,6 +161,40 @@ def test_temporal_metric_plans_trend_forecast_correlation_anomaly_timeseries():
     assert {"trend", "forecast", "correlation", "anomaly_detection", "time_series_analysis"} <= types
 
 
+def test_temporal_metric_prefers_question_named_metric_over_file_order():
+    """The bug found via live testing: "forecast revenue" defaulted to
+    forecasting units_sold because it appeared first in the file, silently
+    answering a different question than the one asked."""
+    ctx = DatasetContext(
+        row_count=100, column_count=3,
+        columns=[
+            ColumnContext(name="date", semantic_role="temporal_dimension", is_temporal=True),
+            ColumnContext(name="units_sold", semantic_role="metric"),
+            ColumnContext(name="revenue_actual", semantic_role="metric"),
+        ],
+        context_source="local_fallback",
+    )
+    intent = QuestionIntent(candidate_analysis_types={"forecast"}, preferred_metrics=["revenue_actual"])
+    plan = AnalyticsPlanner().plan(ctx, _all_possible_profile(), [], question_intent=intent)
+    forecast = next(p for p in plan if p.analysis_type == "forecast")
+    assert forecast.target_columns == ["date", "revenue_actual"]
+
+
+def test_temporal_metric_falls_back_to_file_order_when_no_preferred_metric():
+    ctx = DatasetContext(
+        row_count=100, column_count=3,
+        columns=[
+            ColumnContext(name="date", semantic_role="temporal_dimension", is_temporal=True),
+            ColumnContext(name="units_sold", semantic_role="metric"),
+            ColumnContext(name="revenue_actual", semantic_role="metric"),
+        ],
+        context_source="local_fallback",
+    )
+    plan = AnalyticsPlanner().plan(ctx, _all_possible_profile(), [])
+    forecast = next(p for p in plan if p.analysis_type == "forecast")
+    assert forecast.target_columns == ["date", "units_sold"]
+
+
 def test_structurally_impossible_analysis_never_planned():
     """The Planner only checks structural.supported — when a capability's
     resolver already said structurally impossible, it must never appear
@@ -256,6 +290,49 @@ def test_full_pipeline_question_driven_narrows_correctly():
     assert types <= {"forecast", "trend", "time_series_analysis", "anomaly_detection"}
     assert "clustering" not in types
     assert "association_rules" not in types
+
+
+def test_rule_dimension_metric_deprioritizes_period_fragment_dimensions():
+    """Regression test for a bug caught via live testing against a 2-year
+    banking dataset: rule_dimension_metric fell back to dims[0] in file
+    order, which happened to be a bare "month" column (1-12, no year) --
+    comparing by it on a multi-year dataset silently sums different years
+    of the same month together (confirmed live: the reported "highest in
+    March" was actually March 2023 + March 2024 summed, not a real single
+    period). "region" (a genuine business dimension) must be preferred
+    over "month" even though "month" appears first in column order."""
+    from app.services.planning.planning_rules import rule_dimension_metric
+
+    ctx = DatasetContext(
+        row_count=100, column_count=3,
+        columns=[
+            ColumnContext(name="month", semantic_role="dimension", cardinality_ratio=12 / 100),
+            ColumnContext(name="region", semantic_role="dimension", cardinality_ratio=20 / 100),
+            ColumnContext(name="revenue", semantic_role="metric"),
+        ],
+        context_source="local_fallback",
+    )
+    plans = rule_dimension_metric(ctx, _all_possible_profile(), [], None)
+    comparative = next(p for p in plans if p.analysis_type == "comparative_analysis")
+    assert comparative.target_columns[1] == "region"
+
+
+def test_rule_dimension_metric_still_uses_period_fragment_when_only_option():
+    """Deprioritized, not excluded -- still available when it's the only
+    workable dimension in the dataset."""
+    from app.services.planning.planning_rules import rule_dimension_metric
+
+    ctx = DatasetContext(
+        row_count=1200, column_count=2,
+        columns=[
+            ColumnContext(name="month", semantic_role="dimension", cardinality_ratio=12 / 1200),
+            ColumnContext(name="revenue", semantic_role="metric"),
+        ],
+        context_source="local_fallback",
+    )
+    plans = rule_dimension_metric(ctx, _all_possible_profile(), [], None)
+    comparative = next(p for p in plans if p.analysis_type == "comparative_analysis")
+    assert comparative.target_columns[1] == "month"
 
 
 @pytestmark_hr

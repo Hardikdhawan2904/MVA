@@ -15,6 +15,7 @@ wins, rules ordered most-specific-first).
 
 from __future__ import annotations
 
+import re
 from typing import Callable
 
 from app.services.capability_resolution.models import CapabilityProfile
@@ -28,14 +29,39 @@ from app.services.question_interpreter.models import QuestionIntent
 _CARDINALITY_RATIO_MIN = 0.01
 _CARDINALITY_RATIO_MAX = 0.5
 
-RuleFn = Callable[[DatasetContext, CapabilityProfile, list, "QuestionIntent | None"], list]
+# Narrow, deliberate exception to this file's "never a column name" rule --
+# same class of exception root_cause_analyzer.py's _HEURISTIC_DRIVER_NAME_RE
+# already accepts: domain-neutral calendar vocabulary, not a business term.
+# A month/quarter/weekday-of-year column has no year component, so grouping
+# by it on a dataset spanning more than one year of that period silently
+# sums different years together -- confirmed live where "compare by month"
+# on a 2-year banking dataset reported a "highest in March" headline that
+# was actually March 2023 + March 2024 summed, not a real single period.
+_PERIOD_FRAGMENT_NAME_RE = re.compile(
+    r"\b(month|quarter|weekday|day[_ ]of[_ ]week|day[_ ]name)\b", re.IGNORECASE,
+)
+_PERIOD_FRAGMENT_MAX_DISTINCT = 12  # month=12, quarter=4, weekday=7 -- generous upper bound
+
+
+def _is_period_fragment_dimension(c, row_count: int) -> bool:
+    if not _PERIOD_FRAGMENT_NAME_RE.search(c.name):
+        return False
+    if c.cardinality_ratio is None or row_count <= 0:
+        return False
+    approx_distinct = c.cardinality_ratio * row_count
+    return approx_distinct <= _PERIOD_FRAGMENT_MAX_DISTINCT
 
 
 def _workable_dimensions(ctx: DatasetContext):
-    return [
+    candidates = [
         c for c in ctx.columns_with_role(SEMANTIC_ROLE_DIMENSION)
         if c.cardinality_ratio is not None and _CARDINALITY_RATIO_MIN <= c.cardinality_ratio <= _CARDINALITY_RATIO_MAX
     ]
+    # Period-fragment dimensions are still structurally valid -- pushed to
+    # the end (not excluded), so they remain available when a question
+    # names one explicitly (preferred_dim) or nothing else qualifies.
+    # Stable sort preserves file order within each group.
+    return sorted(candidates, key=lambda c: _is_period_fragment_dimension(c, ctx.row_count))
 
 
 def _propose(capability_profile: CapabilityProfile, analysis_type: str, target_columns, rationale, priority, is_kpi_grounded=False):
@@ -126,14 +152,25 @@ def rule_temporal_metric(
     metrics = ctx.columns_with_role(SEMANTIC_ROLE_METRIC)
     if not temporal or not metrics:
         return []
+    # Phase 4.6 (same fix as rule_dimension_metric): prefer whichever
+    # metric the question actually named, if it's among this rule's own
+    # structurally-valid metric candidates — otherwise "first metric-role
+    # column in file order" silently answers a different question than
+    # the one asked (found live: "forecast revenue" defaulted to
+    # forecasting units_sold because it happened to appear first).
+    metric_names = {m.name for m in metrics}
+    preferred_metric = next(
+        (m for m in (question_intent.preferred_metrics if question_intent else []) if m in metric_names), None,
+    )
+    metric_name = preferred_metric or metrics[0].name
     # [temporal, metric] — Stage 7's ForecastAnalyzer/TrendAnalyzer/
     # TimeSeriesAnalyzer all read target_columns[0] as the temporal column
     # and target_columns[1] as the metric to analyze (matching
     # InsurancePlugin.enhance_plan()'s same convention); correlation/
     # anomaly_detection don't care about column order, so this single
     # ordering serves every analysis_type this rule proposes.
-    cols = [temporal[0].name, metrics[0].name]
-    rationale = f"Temporal column '{temporal[0].name}' + metric column '{metrics[0].name}' present"
+    cols = [temporal[0].name, metric_name]
+    rationale = f"Temporal column '{temporal[0].name}' + metric column '{metric_name}' present"
     out = []
     for analysis_type, priority in [("trend", 2), ("forecast", 2), ("correlation", 3), ("anomaly_detection", 3), ("time_series_analysis", 2)]:
         p = _propose(cp, analysis_type, cols, rationale, priority)

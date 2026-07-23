@@ -230,11 +230,16 @@ def _narration_trace_entry(final_state: dict) -> dict | None:
         "name": "llm_readiness", "score": llm_score, "threshold": LLM_READINESS_THRESHOLD,
         "passed": llm_passed, "breakdown": llm_breakdown,
     }
-    if llm_engine == "Groq":
-        reason = f"LLM readiness ({llm_score:.1f}%) met the {LLM_READINESS_THRESHOLD}% threshold — narrated by Groq."
+    if llm_engine in ("Groq", "Azure OpenAI"):
+        reason = (f"LLM readiness ({llm_score:.1f}%) met the {LLM_READINESS_THRESHOLD}% "
+                  f"threshold — narrated by {llm_engine}.")
     elif llm_passed:
+        # llm_engine is one of explanation_tool.py's "Template Formatter (...)"
+        # failure labels here (e.g. "Template Formatter (Azure + Groq failed)") —
+        # embed it verbatim rather than hardcoding which provider failed, since
+        # it could be either or both.
         reason = (f"LLM readiness ({llm_score:.1f}%) met the {LLM_READINESS_THRESHOLD}% threshold, "
-                  f"but the Groq call itself failed — fell back to the template formatter.")
+                  f"but the LLM call(s) failed ({llm_engine}) — fell back to the template formatter.")
     else:
         reason = (f"LLM readiness ({llm_score:.1f}%) below the {LLM_READINESS_THRESHOLD}% "
                   f"threshold — used the template formatter instead of Groq.")
@@ -248,16 +253,29 @@ def _build_multi_analysis_trace(
     final_state: dict, entries: list, elapsed_seconds: float, node_durations_ms: dict[str, float] | None,
 ) -> tuple[list[dict], dict]:
     """New in Phase 4 — "report mode": more than one analysis was
-    scheduled (only reachable when no curated KPI/keyword narrows the
-    plan to a single analysis, e.g. a bare "analyze this dataset" against
-    a wide non-Insurance upload). There is no existing single-intent
-    behavior to preserve here (Insurance's flow never produces more than
-    1-2 scheduled analyses) — built directly from each Evidence's own
-    reasons/model_metadata/fallback_metadata, which already contain
-    everything needed; no registry re-derivation required."""
+    scheduled. Reachable two ways, not just one: (a) no business_question
+    narrowed the plan at all (true unrestricted report mode, e.g. a bare
+    "analyze this dataset" against a wide non-Insurance upload), or (b) a
+    keyword group matched *several* analysis types at once (e.g.
+    "forecast" maps to {forecast, trend, time_series_analysis,
+    anomaly_detection} — a correctly-narrowed intent that still produces
+    more than one scheduled analysis). Both land in this function since
+    both produce >1 entries, but they're not the same thing — the reason
+    text below distinguishes them via question_intent, instead of always
+    claiming "Report mode" even when the question was actually understood.
+    There is no existing single-intent behavior to preserve here (Insurance's
+    flow never produces more than 1-2 scheduled analyses) — built directly
+    from each Evidence's own reasons/model_metadata/fallback_metadata,
+    which already contain everything needed; no registry re-derivation
+    required."""
+    question_intent = final_state.get("question_intent")
+    if question_intent is not None:
+        reason = f"{question_intent.rationale} — {len(entries)} analyses scheduled"
+    else:
+        reason = f"No business question narrowed the plan — {len(entries)} analyses scheduled (unrestricted report mode)"
     trace: list[dict] = [{
         "step": "intent_detection", "engine": None, "gate": None,
-        "reason": f"Report mode — {len(entries)} analyses scheduled",
+        "reason": reason,
     }]
 
     ml_engine: str | None = None
@@ -301,7 +319,9 @@ def _build_multi_analysis_trace(
         "ml_engine": ml_engine,
         "narration_engine": llm_engine_used,
         "execution_time_seconds": round(elapsed_seconds, 3),
-        "fallback_used": bool(any_ml_blocked or (llm_engine_used is not None and llm_engine_used != "Groq")),
+        "fallback_used": bool(
+            any_ml_blocked or (llm_engine_used is not None and llm_engine_used not in ("Groq", "Azure OpenAI"))
+        ),
     }
     return trace, summary
 
@@ -392,27 +412,9 @@ def _build_execution_trace(
                     reason += f" Classifier accuracy: {xgb['accuracy']:.1%} (trained {xgb.get('timestamp', 'unknown')})."
             trace.append({"step": intent, "engine": engine, "gate": None, "reason": reason})
 
-        llm_engine = final_state.get("llm_engine_used")
-        if llm_engine:
-            llm_score = final_state.get("llm_readiness_score")
-            llm_passed = llm_score is not None and llm_score >= LLM_READINESS_THRESHOLD
-            llm_breakdown = final_state.get("llm_readiness_breakdown")
-            gate = {
-                "name": "llm_readiness", "score": llm_score, "threshold": LLM_READINESS_THRESHOLD,
-                "passed": llm_passed, "breakdown": llm_breakdown,
-            }
-            if llm_engine == "Groq":
-                reason = f"LLM readiness ({llm_score:.1f}%) met the {LLM_READINESS_THRESHOLD}% threshold — narrated by Groq."
-            elif llm_passed:
-                reason = (f"LLM readiness ({llm_score:.1f}%) met the {LLM_READINESS_THRESHOLD}% threshold, "
-                          f"but the Groq call itself failed — fell back to the template formatter.")
-            else:
-                reason = (f"LLM readiness ({llm_score:.1f}%) below the {LLM_READINESS_THRESHOLD}% "
-                          f"threshold — used the template formatter instead of Groq.")
-            breakdown_summary = _summarize_breakdown(llm_breakdown)
-            if breakdown_summary:
-                reason += f" {breakdown_summary}"
-            trace.append({"step": "narration", "engine": llm_engine, "gate": gate, "reason": reason})
+        narration_entry = _narration_trace_entry(final_state)
+        if narration_entry:
+            trace.append(narration_entry)
 
     if node_durations_ms:
         for entry in trace:
@@ -429,7 +431,7 @@ def _build_execution_trace(
         "execution_time_seconds": round(elapsed_seconds, 3),
         "fallback_used": bool(
             (evidence is not None and intent in _ML_GATED_ENGINES and evidence.get("ml_readiness_blocked", False))
-            or (llm_engine_used is not None and llm_engine_used != "Groq")
+            or (llm_engine_used is not None and llm_engine_used not in ("Groq", "Azure OpenAI"))
         ),
     }
     return trace, summary

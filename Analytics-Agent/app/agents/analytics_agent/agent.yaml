@@ -146,7 +146,7 @@ memory:
 tools:
   - id: "rule_engine"
     name: "Rule Engine Tool"
-    file: "app/services/rule_engine.py"
+    file: "app/services/tools/rule_engine.py"
     class: "RuleEngine"
     description: "Loads KPI definitions, formulas, thresholds, and drill-down hierarchies — parameterizable per DomainPlugin since Phase 2"
     used_by:
@@ -155,20 +155,20 @@ tools:
 
   - id: "sql_tool"
     name: "SQL / DuckDB Tool"
-    file: "app/services/sql_tool.py"
+    file: "app/services/tools/sql_tool.py"
     class: "SQLTool"
     description: "Executes SQL against the uploaded CSV via DuckDB (in-process); one shared, filtered fetch per request since Phase 4 (execute_analyses), not one query per handler"
     backend: "DuckDB"
 
   - id: "analytics_tool"
     name: "Analytics Tool"
-    file: "app/services/analytics_tool.py"
+    file: "app/services/tools/analytics_tool.py"
     class: "AnalyticsTool"
     description: "Deterministic calculations: aggregation, variance, growth, ranking, group comparison — backs the trend/ranking/comparative_analysis analyzers and kpi_summary/kpi_variance directly"
 
   - id: "root_cause_tool"
     name: "Root Cause Tool"
-    file: "app/services/root_cause_tool.py"
+    file: "app/services/tools/root_cause_tool.py"
     class: "RootCauseTool"
     description: "Labeled-driver mode: sums a domain plugin's pre-computed variance-driver columns (Insurance's 14) and ranks contributors. Correlation-based mode (RootCauseAnalyzer, Phase 3) is the generic default for datasets with no such columns."
 
@@ -186,19 +186,19 @@ tools:
 
   - id: "knowledge_update_tool"
     name: "Knowledge Update Tool"
-    file: "app/services/knowledge_update_service.py"
+    file: "app/services/tools/knowledge_update_service.py"
     class: "KnowledgeUpdateTool"
-    description: "Generates and validates new KPI definitions (via Groq) when a domain plugin's Rule Engine has a gap"
+    description: "Generates and validates new KPI definitions (via Groq -- not migrated to Azure OpenAI, unlike explanation_tool below; this is the one remaining Groq-only LLM call site in Agent 3) when a domain plugin's Rule Engine has a gap"
     triggers:
       - "when Rule Engine returns None for a resolved KPI name"
 
   - id: "explanation_tool"
     name: "Explanation Tool"
-    file: "app/services/explanation_tool.py"
+    file: "app/services/tools/explanation_tool.py"
     class: "ExplanationTool"
-    description: "Converts EvidenceBuilder.to_narration_context() into business language using Groq LLM — unchanged logic since before the redesign, only its input shape changed"
-    llm_provider: "Groq"
-    llm_model: "llama-3.3-70b-versatile"
+    description: "Converts EvidenceBuilder.to_narration_context() into business language, trying Azure OpenAI first (when AZURE_OPENAI_API_KEY/ENDPOINT/DEPLOYMENT are all set) then Groq -- unchanged narration/confidence-override logic since before the redesign, only its input shape and provider chain changed"
+    llm_provider: "Azure OpenAI (falls back to Groq)"
+    llm_model: "from AZURE_OPENAI_DEPLOYMENT, or llama-3.3-70b-versatile on the Groq path"
     llm_temperature: 0.0
     fallback: "template_formatter (also renders multi-analysis 'report mode' — one section per analysis type)"
     triggers:
@@ -295,13 +295,13 @@ pipeline_stages:
 
   - stage: 9
     name: "narrate"
-    module: "app/services/explanation_tool.py"
+    module: "app/services/tools/explanation_tool.py"
     description: >
-      Unchanged Groq/template-formatter logic — only its input shape
-      changed (EvidenceBuilder.to_narration_context() instead of a raw
-      dict a handler assembled inline). The template formatter also knows
-      how to render "report mode"'s nested multi-analysis shape, one
-      section per analysis type.
+      Unchanged Azure-OpenAI-first/Groq-fallback/template-formatter logic
+      — only its input shape changed (EvidenceBuilder.to_narration_context()
+      instead of a raw dict a handler assembled inline). The template
+      formatter also knows how to render "report mode"'s nested
+      multi-analysis shape, one section per analysis type.
 
 analysis_type_categories:
   kpi_grounded:
@@ -420,10 +420,17 @@ execution_trace:
       breakdown_source: "Agent 2's ReadinessEngine (strengths/blocking_issues/evidence), forwarded by Agent-Orchestrator"
     llm_readiness:
       threshold: 75.0
-      # A passed gate whose Groq call itself fails is reported distinctly
-      # ("Template Formatter (Groq error)") from a gate that never passed
-      # ("Template Formatter") — ExplanationTool.last_engine_used is what
-      # makes this distinction observable.
+      # A passed gate whose LLM call(s) actually fail is reported distinctly
+      # ("Template Formatter (Azure + Groq failed)" or "Template Formatter
+      # (Groq failed, Azure not configured)") from a gate that never passed
+      # ("Template Formatter") -- and a genuine Azure OpenAI success is
+      # reported as exactly that ("Azure OpenAI"), never conflated with a
+      # failure just because it wasn't Groq specifically (a real bug, fixed:
+      # every non-"Groq" engine used to be reported as "the Groq call itself
+      # failed" even on a clean Azure success, which also made
+      # execution_summary.fallback_used wrongly true on every Azure
+      # success). ExplanationTool.last_engine_used is what makes all of
+      # this observable -- see _narration_trace_entry() in graph.py.
   model_versioning:
     source: "ml/model_registry.json"   # run metadata (last trained/run timestamps) — distinct from config/model_registry.yml, Stage 6's algorithm-selection catalog
     prophet: "refits every query — reported as last_run_at, never a fake training date"
