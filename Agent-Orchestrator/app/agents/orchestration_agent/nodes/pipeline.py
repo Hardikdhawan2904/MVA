@@ -144,16 +144,40 @@ _DOMAIN_SYNONYMS = {
     "customer relationship management": "Customer",
     "e-commerce": "Customer",
     "ecommerce": "Customer",
+    "sales": "Customer",
+    "retail": "Customer",
     "hr": "HR",
     "human resources": "HR",
     "human resource": "HR",
 }
 
+# Fallback for whatever wording _DOMAIN_SYNONYMS's exact-match list hasn't
+# hit yet. Agent 1's classification is LLM-driven and non-deterministic --
+# it keeps inventing new phrasings for domains Agent 2 already supports
+# ("E-commerce", then "Sales", for the same underlying retail dataset,
+# confirmed live both times this session) instead of settling on one. An
+# exact-match dict alone turns every new phrasing into a fire drill; these
+# keyword patterns catch the vocabulary a domain is reliably described
+# with, checked only when the exact match above misses.
+_DOMAIN_KEYWORD_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"\b(insur|underwrit|claim|policy|premium)\w*", re.IGNORECASE), "Insurance"),
+    (re.compile(r"\b(financ|bank|accounting)\w*", re.IGNORECASE), "Finance"),
+    (re.compile(r"\b(payment|billing|transaction processing)\w*", re.IGNORECASE), "Payments"),
+    (re.compile(r"\b(human resource|payroll|employee|workforce|recruit)\w*", re.IGNORECASE), "HR"),
+    (re.compile(r"\b(retail|sales|e-?commerce|customer|shopping|store)\w*", re.IGNORECASE), "Customer"),
+]
+
 
 def _canonicalize_domain(raw_domain: str) -> str:
     """Normalize Agent 1's classification wording onto Agent 2's exact
     supported-domain strings before it's used anywhere downstream."""
-    return _DOMAIN_SYNONYMS.get(raw_domain.strip().lower(), raw_domain)
+    normalized = raw_domain.strip().lower()
+    if normalized in _DOMAIN_SYNONYMS:
+        return _DOMAIN_SYNONYMS[normalized]
+    for pattern, canonical in _DOMAIN_KEYWORD_PATTERNS:
+        if pattern.search(raw_domain):
+            return canonical
+    return raw_domain
 
 
 def _safe_json(resp: httpx.Response) -> dict[str, Any]:

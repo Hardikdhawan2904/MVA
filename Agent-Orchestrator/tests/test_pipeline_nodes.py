@@ -134,9 +134,31 @@ def test_canonicalize_domain_handles_ecommerce_as_customer_synonym():
     assert _canonicalize_domain("ecommerce") == "Customer"
 
 
+def test_canonicalize_domain_handles_sales_and_retail_as_customer_synonyms():
+    # Regression test for a bug caught live: Agent 1 classified the exact
+    # same retail dataset as "E-commerce" once and "Sales" another time --
+    # same underlying data, different LLM wording, both times unhandled
+    # until added.
+    assert _canonicalize_domain("Sales") == "Customer"
+    assert _canonicalize_domain("Retail Performance") == "Customer"
+
+
+def test_canonicalize_domain_keyword_fallback_catches_unlisted_wordings():
+    """The exact-match dict alone means every new wording Agent 1's
+    classifier invents is a fire drill -- this keyword fallback is meant
+    to catch phrasings that were never explicitly added, not just the
+    ones already in _DOMAIN_SYNONYMS."""
+    assert _canonicalize_domain("Retail Analytics") == "Customer"
+    assert _canonicalize_domain("Banking Operations") == "Finance"
+    assert _canonicalize_domain("Underwriting and Reporting") == "Insurance"
+    assert _canonicalize_domain("Payroll Management") == "HR"
+    assert _canonicalize_domain("Billing Systems") == "Payments"
+
+
 def test_canonicalize_domain_passes_through_unrecognized_domains_unchanged():
-    # No synonym for "Healthcare" -- Agent 2's own UNSUPPORTED_DOMAIN error
-    # is still the correct outcome, not a silently wrong mapping.
+    # No synonym or keyword match for "Healthcare" -- Agent 2's own
+    # UNSUPPORTED_DOMAIN error is still the correct outcome, not a
+    # silently wrong mapping.
     assert _canonicalize_domain("Healthcare") == "Healthcare"
 
 
