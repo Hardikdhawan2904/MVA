@@ -161,6 +161,40 @@ class TestAggregationEngine:
         assert len(result.data) == 1
         assert result.data[0]["value"] == 600.0
 
+    def test_kpi_aggregation_never_emits_nan_for_an_all_non_numeric_metric(self, agg_engine):
+        """Regression test for a bug caught via live testing: mean/max/min
+        on a metric column that's entirely non-numeric/null returns NaN,
+        and json.dumps happily serializes that as the bare, non-standard
+        token `NaN` -- not valid JSON, a real risk for any strict client
+        parser. _aggregate_categorical already guards against this;
+        _aggregate_kpi didn't."""
+        import math
+        df = pd.DataFrame({"weird_metric": ["n/a", "n/a", "n/a"]})
+        chart = ChartSpec(
+            chart_key="kpi", category=ChartCategory.BUSINESS, chart_type=ChartType.KPI,
+            title="Total", metric="weird_metric", aggregation="mean",
+        )
+        result = agg_engine.aggregate(df, chart)
+        assert not math.isnan(result.data[0]["value"])
+        assert result.data[0]["value"] == 0
+
+    def test_temporal_aggregation_never_emits_nan_for_an_all_non_numeric_period(self, agg_engine):
+        """Companion to the KPI test above: _aggregate_temporal's mean/max/
+        min path has the same missing guard -- a time period whose metric
+        values are all non-numeric produces NaN for that data point."""
+        import math
+        df = pd.DataFrame({
+            "date": ["2024-01-01", "2024-01-02", "2024-01-03"],
+            "weird_metric": ["n/a", "n/a", "n/a"],
+        })
+        chart = ChartSpec(
+            chart_key="line", category=ChartCategory.BUSINESS, chart_type=ChartType.LINE,
+            title="Test", dimension="date", metric="weird_metric", aggregation="mean",
+        )
+        result = agg_engine.aggregate(df, chart)
+        assert len(result.data) > 0
+        assert all(not math.isnan(d["value"]) for d in result.data)
+
 
 class TestDrillDownService:
     def test_valid_drill_down(self):

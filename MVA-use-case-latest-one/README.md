@@ -216,9 +216,8 @@ alembic downgrade -1
 | MAX_DATASET_COLUMNS | 200 | Max columns |
 | PROCESSING_TIMEOUT_SECONDS | 120 | Pipeline timeout |
 | MIN_CUBE_GROUP_SIZE | 5 | Small-group suppression |
-| LLM_PROVIDER | local | LLM backend (`local`, `openai`, or `groq`) — see below, Azure wraps whichever of these is selected when configured |
-| LLM_API_KEY | | Groq API key (used as the fallback when Azure is configured, or the primary path when it isn't) |
-| AZURE_OPENAI_API_KEY / AZURE_OPENAI_ENDPOINT / AZURE_OPENAI_DEPLOYMENT | | Optional. When all three are set, `create_llm_provider()` (`app/services/llm/factory.py`) wraps the selected `LLM_PROVIDER` in a `ChainedLLMProvider([AzureOpenAIProvider, <selected provider>])` — Azure is tried first, falling back to whichever provider `LLM_PROVIDER` names if Azure fails or isn't configured. Same fallback applies to the `feature_target_agent`/`rule_suggestion_agent` sub-agents' own LLM calls (`_build_chat_model()` in each agent's `nodes/pipeline.py`). |
+| LLM_PROVIDER | local | LLM backend (`local`, `openai`, or `groq`) — see below |
+| LLM_API_KEY | | Groq API key |
 | LLM_BURST_COOLDOWN_SECONDS | 5 | Delay before the rule-suggestion LLM call, after the schema-intelligence LLM call — Groq's free tier enforces a burst limit tight enough that firing both back-to-back gets rate-limited even with unused quota |
 | LOG_LEVEL | INFO | Logging level |
 

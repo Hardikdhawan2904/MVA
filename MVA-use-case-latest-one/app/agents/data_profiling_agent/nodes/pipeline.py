@@ -14,6 +14,7 @@ Two real new decision points that didn't exist before:
 
 from __future__ import annotations
 
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -318,7 +319,12 @@ class ProfilingGraphNodes:
             suggestions = run_rule_suggestion_agent(
                 llm_model=self._settings.llm_model,
                 api_key=self._settings.llm_api_key,
-                col_profiles=state["col_profiles"][:30],
+                # No [:30] cap -- same class of bug as feature_target_agent's
+                # column-summary truncation (see that graph.py's comment):
+                # a wide dataset's business-relevant columns can sit well
+                # past position 30, and were structurally invisible to this
+                # agent regardless of how well they'd fit a proposed rule.
+                col_profiles=state["col_profiles"],
                 df=state["df"],
                 primary_domain=state["primary_domain"],
                 secondary_domain=state["sec_domain"].name,
@@ -351,6 +357,19 @@ class ProfilingGraphNodes:
         if self._llm_provider is None:
             return {"feature_recommendation": _deterministic_feature_split(sem_candidates, grain_result)}
 
+        # A caller-supplied override always wins. Otherwise, try to resolve
+        # the target deterministically from the question text before ever
+        # asking the LLM to guess -- this is the actual, reproducible source
+        # of target-selection non-determinism for the common "question
+        # names the column in plain English" case (e.g. "Forecast
+        # underwriting result..." naming underwriting_result_actual): the
+        # LLM's answer for that case shouldn't depend on chance, so don't
+        # let it. Only returns a column on a single, unambiguous match --
+        # anything murkier still goes to the LLM exactly as before.
+        effective_override = target_override
+        if not effective_override and business_question:
+            effective_override = _infer_target_column_from_question(business_question, sem_candidates)
+
         from app.agents.feature_target_agent import run_feature_target_agent
 
         try:
@@ -362,7 +381,7 @@ class ProfilingGraphNodes:
                 grain_result=grain_result,
                 df=state["df"],
                 business_question=business_question,
-                target_column_override=target_override,
+                target_column_override=effective_override,
             )
             return {"feature_recommendation": recommendation}
         except Exception as e:
@@ -502,6 +521,42 @@ def _build_column_output(profiles, refined_types, candidates, si_result, grain_r
 
 
 _FEATURE_ROLES = {ColumnRole.METRIC, ColumnRole.DIMENSION, ColumnRole.TEMPORAL_DIMENSION, ColumnRole.FLAG}
+
+# Qualifier suffixes stripped from a metric column's normalized name before
+# phrase-matching against the question -- same pattern Analytics-Agent's
+# BusinessQuestionInterpreter._base_phrase already uses successfully for
+# the identical problem (a column like "net_profit_actual" should match a
+# question mentioning "net profit" even though the column itself also
+# carries an "actual"/"budget"/etc. qualifier the question doesn't repeat).
+_TARGET_QUALIFIER_SUFFIX_RE = re.compile(
+    r"\b(actual|budget|forecast|prior[_ ]year|ytd|ratio|rate|amount|pct|percent)\b", re.IGNORECASE,
+)
+_MIN_TARGET_PHRASE_LEN = 3
+
+
+def _infer_target_column_from_question(business_question: str, sem_candidates) -> str | None:
+    """Deterministic, zero-LLM-cost target resolution for the common case
+    where the question names the target in plain English (e.g. "Forecast
+    underwriting result for next 6 months" naming
+    underwriting_result_actual). Only returns a column when there's a
+    single, unambiguous longest match -- anything murkier (no match, or a
+    tie) is left to the LLM exactly as before, never guessed."""
+    question_lower = business_question.lower()
+    candidates: list[tuple[int, str]] = []
+    for c in sem_candidates:
+        if c.candidate_column_role != ColumnRole.METRIC:
+            continue
+        normalized = c.column_name.replace("_", " ").lower()
+        phrase = _TARGET_QUALIFIER_SUFFIX_RE.sub("", normalized)
+        phrase = re.sub(r"\s+", " ", phrase).strip()
+        if len(phrase) >= _MIN_TARGET_PHRASE_LEN and phrase in question_lower:
+            candidates.append((len(phrase), c.column_name))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda pair: pair[0], reverse=True)
+    if len(candidates) > 1 and candidates[0][0] == candidates[1][0]:
+        return None  # ambiguous tie -- don't guess
+    return candidates[0][1]
 
 
 def _deterministic_feature_split(sem_candidates, grain_result) -> dict[str, Any]:

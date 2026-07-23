@@ -13,9 +13,7 @@ from typing import Any, Literal
 
 from langchain_core.messages import AIMessage
 from langchain_groq import ChatGroq
-from langchain_openai import AzureChatOpenAI
 
-from app.core.config import Settings
 from app.core.logging import get_logger
 from app.agents.feature_target_agent.config import get_agent_tool_names, get_llm_config
 from app.agents.feature_target_agent.state import FeatureTargetAgentState
@@ -29,23 +27,6 @@ VALID_USEFULNESS = {"high", "medium", "low"}
 
 
 def _build_chat_model(llm_model: str, api_key: str, temperature: float, max_tokens: int):
-    """Azure OpenAI when configured (read directly via a fresh Settings()
-    -- pydantic-settings reads .env with no args needed, avoiding threading
-    3 new params through build_feature_target_graph/run_feature_target_agent
-    just for this), else Groq exactly as before. A selection, not a chain:
-    the caller (ProfilingGraphNodes.recommend_target_features) already
-    wraps the whole agent run in try/except with a deterministic fallback,
-    which stays the real fallback if whichever provider fails."""
-    settings = Settings()
-    if settings.azure_openai_api_key and settings.azure_openai_endpoint and settings.azure_openai_deployment:
-        return AzureChatOpenAI(
-            azure_endpoint=settings.azure_openai_endpoint,
-            azure_deployment=settings.azure_openai_deployment,
-            api_key=settings.azure_openai_api_key,
-            api_version="2024-08-01-preview",
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
     return ChatGroq(model=llm_model, api_key=api_key, temperature=temperature, max_tokens=max_tokens)
 
 
@@ -133,7 +114,13 @@ class FeatureTargetAgentNodes:
             if col not in self._valid_columns:
                 logger.warning("feature_target_agent_invalid_feature_column", column=col)
                 continue
-            usefulness = f.get("usefulness") if f.get("usefulness") in VALID_USEFULNESS else "medium"
+            # Normalize case before checking -- an LLM returning "High"/"Medium"
+            # (plausible prompt-adherence drift; not schema-constrained) would
+            # otherwise silently downgrade to the "medium" default instead of
+            # being recognized, since readiness_engine.py's usefulness_weight
+            # lookup is a case-sensitive exact match too.
+            raw_usefulness = (f.get("usefulness") or "").strip().lower()
+            usefulness = raw_usefulness if raw_usefulness in VALID_USEFULNESS else "medium"
             feature_columns.append({
                 "column": col,
                 "role": f.get("role"),

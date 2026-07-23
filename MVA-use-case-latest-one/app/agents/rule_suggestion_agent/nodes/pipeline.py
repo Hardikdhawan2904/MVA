@@ -14,9 +14,7 @@ from typing import Any, Literal
 
 from langchain_core.messages import AIMessage
 from langchain_groq import ChatGroq
-from langchain_openai import AzureChatOpenAI
 
-from app.core.config import Settings
 from app.core.enums import RuleSuggestionStatus, RuleType
 from app.core.logging import get_logger
 from app.agents.rule_suggestion_agent.config import get_agent_tool_names, get_llm_config
@@ -49,23 +47,6 @@ def _extract_json(content: str) -> dict[str, Any] | None:
 
 
 def _build_chat_model(llm_model: str, api_key: str, temperature: float, max_tokens: int):
-    """Azure OpenAI when configured (read directly via a fresh Settings()
-    -- avoids threading 3 new params through build_rule_suggestion_graph/
-    run_rule_suggestion_agent just for this), else Groq exactly as before.
-    A selection, not a chain: the caller
-    (ProfilingGraphNodes.generate_suggestions) already wraps the whole
-    agent run in try/except, returning an empty suggestions list on
-    failure -- that stays the real fallback if whichever provider fails."""
-    settings = Settings()
-    if settings.azure_openai_api_key and settings.azure_openai_endpoint and settings.azure_openai_deployment:
-        return AzureChatOpenAI(
-            azure_endpoint=settings.azure_openai_endpoint,
-            azure_deployment=settings.azure_openai_deployment,
-            api_key=settings.azure_openai_api_key,
-            api_version="2024-08-01-preview",
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
     return ChatGroq(model=llm_model, api_key=api_key, temperature=temperature, max_tokens=max_tokens)
 
 

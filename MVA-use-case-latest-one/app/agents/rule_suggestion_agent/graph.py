@@ -60,8 +60,11 @@ Only populate fields relevant to the chosen type."""
 
 
 def _build_columns_summary(col_profiles: list) -> str:
+    """No truncation -- see feature_target_agent/graph.py's
+    _build_columns_summary for why a positional cap here silently hides
+    real columns from the agent on wide datasets."""
     lines = []
-    for p in col_profiles[:30]:
+    for p in col_profiles:
         lines.append(
             f"- {p.physical_name}: type={p.pandas_dtype}, "
             f"nulls={p.null_ratio:.2%}, distinct={p.distinct_count}, "

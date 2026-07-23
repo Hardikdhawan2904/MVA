@@ -6,6 +6,14 @@ from app.core.constants import READINESS_READY_THRESHOLD, READINESS_PARTIALLY_RE
 from app.core.enums import ReadinessType, ReadinessStatus
 from app.services.profiling.column_profiler import ColumnProfileResult
 
+# Weighted-usefulness feature count that earns full feature_coverage credit,
+# regardless of how many columns the dataset actually has -- see _assess_ml's
+# feature_coverage comment for why this replaced a len(profiles)-relative
+# ratio. ~10 well-chosen ("high" or better) features is already a solid
+# tabular ML feature set; a dataset having 20 vs 200 total columns shouldn't
+# change how good a 10-feature recommendation is.
+_FEATURE_COVERAGE_TARGET = 10.0
+
 
 class ReadinessResult:
     """Result of a single readiness assessment."""
@@ -99,6 +107,20 @@ class ReadinessEngine:
         llm = self._assess_llm(profiles, quality_results, description_coverage, feature_recommendation)
 
         overall_score = (analytics.score + ml.score + llm.score) / 3.0
+        # Mean of whichever components actually have a value -- analytics
+        # always has a dataset_score (it's entirely dataset-driven), ml/llm
+        # do whenever their own dataset_max/dataset-only inputs were
+        # assessable. task_compatibility_score only ever comes from ml/llm
+        # (analytics has no task-dependent input at all) and stays None
+        # when neither ran a real task-dependent assessment -- a caller
+        # asking "how good is this dataset overall, independent of any
+        # question" previously had to average the 3 components' own
+        # dataset_score fields themselves; this is that aggregate.
+        dataset_scores = [s for s in (analytics.dataset_score, ml.dataset_score, llm.dataset_score) if s is not None]
+        overall_dataset_score = sum(dataset_scores) / len(dataset_scores) if dataset_scores else None
+        task_scores = [s for s in (ml.task_compatibility_score, llm.task_compatibility_score) if s is not None]
+        overall_task_compatibility_score = sum(task_scores) / len(task_scores) if task_scores else None
+
         overall = ReadinessResult(
             assessment_type=ReadinessType.OVERALL,
             score=overall_score,
@@ -112,6 +134,8 @@ class ReadinessEngine:
                 {"component": "llm", "score": round(llm.score, 2)},
             ],
             weight_profile_version="overall-v1",
+            dataset_score=overall_dataset_score,
+            task_compatibility_score=overall_task_compatibility_score,
         )
 
         return [analytics, ml, llm, overall]
@@ -242,7 +266,18 @@ class ReadinessEngine:
         if has_task:
             usefulness_weight = {"high": 1.0, "medium": 0.6, "low": 0.25}
             weighted = sum(usefulness_weight.get(f.get("usefulness"), 0.5) for f in recommended_features)
-            feature_ratio = weighted / max(len(profiles), 1)
+            # Scaled against an absolute target, not len(profiles) -- a
+            # deliberately-selective response naming ~10 well-chosen,
+            # high-usefulness columns is already a *good* feature set for
+            # most tabular ML, whether the dataset has 20 columns or 200.
+            # Dividing by the full column count instead structurally
+            # punished wide datasets for the LLM behaving sensibly:
+            # confirmed live on a real 141-column dataset where naming 10
+            # genuinely relevant features (correctly ignoring ~130
+            # low-signal/administrative ones) scored a feature_coverage of
+            # 0.06 under the old ratio -- as if the recommendation were
+            # nearly worthless, when it wasn't.
+            feature_ratio = min(1.0, weighted / _FEATURE_COVERAGE_TARGET)
             pts = min(15.0, feature_ratio * 15)
             score += pts
             task_pts += pts
@@ -259,7 +294,7 @@ class ReadinessEngine:
                 # the deterministic (question-less) fallback which never sets it.
                 blockers.append({"code": "NO_TARGET_IDENTIFIED"})
 
-            recommended_drops = set(d.get("column") for d in feature_recommendation.get("drop_columns") or [])
+            recommended_features_names = {f.get("column") for f in recommended_features}
         else:
             non_id_cols = [p for p in profiles if p.physical_name not in grain_columns]
             feature_ratio = len(non_id_cols) / max(len(profiles), 1)
@@ -268,12 +303,26 @@ class ReadinessEngine:
             dataset_pts += pts
             dataset_max += 15
             evidence.append({"dimension": "feature_coverage", "value": round(feature_ratio, 3)})
-            recommended_drops = set(grain_columns)
+            recommended_features_names = {p.physical_name for p in non_id_cols}
 
-        # Identifier contamination check — attributed to whichever pool
-        # recommended_drops came from (feature_recommendation's own
-        # drop_columns when a task is in play, else the dataset-only grain).
-        id_contamination = len(recommended_drops) / max(len(profiles), 1)
+        # Identifier contamination check — genuinely means "did an
+        # identifier/grain column leak into the recommended FEATURE set",
+        # not "how many columns did the recommendation drop overall".
+        # Previously measured len(drop_columns)/len(profiles), which
+        # penalized exactly the thorough, selective recommendations that
+        # correctly drop many low-signal columns on a wide dataset (the
+        # same unfairness class as feature_coverage's now-fixed len(profiles)
+        # -relative ratio — confirmed live: a 20-column dataset naming 10
+        # good features and correctly dropping 9 others, including the
+        # identifier, was blocked with IDENTIFIER_CONTAMINATION at 0.45 —
+        # while a recommendation that left the identifier directly IN
+        # feature_columns, with nothing dropped at all, triggered no
+        # blocker whatsoever. Checking membership in feature_columns
+        # directly catches the real failure mode and stops punishing
+        # good, wide-dataset feature selection.
+        grain_set = set(grain_columns)
+        leaked_identifiers = grain_set & recommended_features_names
+        id_contamination = len(leaked_identifiers) / len(grain_set) if grain_set else 0.0
         penalty = 0.0
         if id_contamination > 0.3:
             blockers.append({"code": "IDENTIFIER_CONTAMINATION", "value": round(id_contamination, 3)})
@@ -301,16 +350,24 @@ class ReadinessEngine:
         dataset_pts += pts
         dataset_max += 15
 
-        # Cardinality health — dataset-only
-        high_card = sum(1 for p in profiles if p.cardinality_ratio > 0.9 and p.physical_name not in grain_columns)
-        if high_card == 0:
-            pts = 10.0
-        else:
-            recommendations.append({"code": "HIGH_CARDINALITY_FEATURES", "value": high_card, "priority": "medium"})
-            pts = 5.0
-        score += pts
-        dataset_pts += pts
-        dataset_max += 10
+        # Cardinality health — dataset-only. Only assessed when there's at
+        # least one non-grain column to check; previously this awarded a
+        # perfect 10/10 "no cardinality problems" even with zero profiled
+        # (non-grain) columns, which is "nothing to assess", not "assessed
+        # clean" -- matches the same not-assessable-vs-clean distinction
+        # every other quality dimension already makes (e.g. completeness/
+        # consistency evidence is only appended when a real score exists).
+        non_grain_profiles = [p for p in profiles if p.physical_name not in grain_columns]
+        if non_grain_profiles:
+            high_card = sum(1 for p in non_grain_profiles if p.cardinality_ratio > 0.9)
+            if high_card == 0:
+                pts = 10.0
+            else:
+                recommendations.append({"code": "HIGH_CARDINALITY_FEATURES", "value": high_card, "priority": "medium"})
+                pts = 5.0
+            score += pts
+            dataset_pts += pts
+            dataset_max += 10
 
         # Uniqueness — dataset-only
         uniq = self._get_quality_score(quality_results, "uniqueness")

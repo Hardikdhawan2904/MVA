@@ -22,8 +22,8 @@ _MAX_BATCH_SIZE = 30
 
 # Batches are independent LLM calls (different columns, same domain_context) --
 # run them concurrently instead of one-at-a-time. Capped, not unbounded, to
-# stay a safe multiple of what a single-batch burst already sends to
-# Groq/Azure rather than firing every batch of a very wide dataset at once.
+# stay a safe multiple of what a single-batch burst already sends to Groq
+# rather than firing every batch of a very wide dataset at once.
 _MAX_PARALLEL_BATCHES = 5
 
 

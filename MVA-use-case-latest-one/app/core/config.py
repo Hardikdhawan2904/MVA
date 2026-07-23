@@ -35,13 +35,6 @@ class Settings(BaseSettings):
     llm_max_retries: int = Field(default=2, alias="LLM_MAX_RETRIES")
     llm_burst_cooldown_seconds: float = Field(default=5.0, alias="LLM_BURST_COOLDOWN_SECONDS")
 
-    # Azure OpenAI (optional, tried before Groq when set -- see
-    # app/services/llm/factory.py::create_llm_provider). Unset by default,
-    # so behavior is byte-identical to today until explicitly configured.
-    azure_openai_api_key: str = Field(default="", alias="AZURE_OPENAI_API_KEY")
-    azure_openai_endpoint: str = Field(default="", alias="AZURE_OPENAI_ENDPOINT")
-    azure_openai_deployment: str = Field(default="", alias="AZURE_OPENAI_DEPLOYMENT")
-
     # Logging
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     log_format: str = Field(default="json", alias="LOG_FORMAT")

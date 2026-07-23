@@ -94,8 +94,14 @@ class AggregationEngine:
         else:
             agg = temp_df.groupby(temp_df["_time"].dt.to_period("M")).size()
 
+        # NaN guard for the same reason _aggregate_categorical already has
+        # one: a group whose metric values are all null/non-numeric (mean/
+        # max/min, not sum) produces NaN, which json.dumps happily emits
+        # as the bare, non-standard token `NaN` -- not valid JSON, and a
+        # real risk for any strict client-side parser. Confirmed live via
+        # AggregationEngine.aggregate() directly.
         data = [
-            {"label": str(period), "value": round(float(val), 2)}
+            {"label": str(period), "value": round(float(val), 2) if not np.isnan(val) else 0}
             for period, val in agg.items()
         ]
         return data[:self._max_points]
@@ -119,6 +125,14 @@ class AggregationEngine:
         else:
             value = float(numeric.sum())
 
+        # NaN guard: mean/max/min on a metric column that's entirely
+        # null/non-numeric (e.g. a borderline "metric" classification, or
+        # a genuinely all-null column) returns NaN, and json.dumps
+        # happily emits the bare, non-standard token `NaN` for it --
+        # invalid JSON, a real risk for any strict client-side parser.
+        # Matches the guard _aggregate_categorical already has.
+        if np.isnan(value):
+            value = 0.0
         return [{"label": chart.title, "value": round(value, 2)}]
 
     def _aggregate_histogram(self, df: pd.DataFrame, chart: ChartSpec) -> list[dict[str, Any]]:

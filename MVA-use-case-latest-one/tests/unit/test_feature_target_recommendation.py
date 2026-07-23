@@ -10,7 +10,9 @@ from app.services.profiling.column_profiler import ColumnProfiler
 from app.services.profiling.identifier_detector import GrainDetectionResult
 from app.services.profiling.semantic_candidate_generator import SemanticCandidate
 from app.services.readiness.readiness_engine import ReadinessEngine
-from app.agents.data_profiling_agent.nodes.pipeline import _deterministic_feature_split
+from app.agents.data_profiling_agent.nodes.pipeline import (
+    _deterministic_feature_split, _infer_target_column_from_question,
+)
 
 
 def _candidate(name: str, role: ColumnRole, semantic_type: str | None = None) -> SemanticCandidate:
@@ -23,6 +25,63 @@ def _candidate(name: str, role: ColumnRole, semantic_type: str | None = None) ->
         candidate_confidence=0.9,
         evidence=[],
     )
+
+
+class TestInferTargetColumnFromQuestion:
+    """Regression tests for a bug caught via live testing: on a real
+    141-column dataset, the target-picking LLM was never even shown
+    columns past index 60 (a truncation bug fixed separately in
+    feature_target_agent/graph.py), so "Forecast underwriting result..."
+    resolved to underwriting_result_actual (index 88), a wrong-but-visible
+    column, or nothing at all -- non-deterministically, across identical
+    repeated calls. This deterministic pre-check removes the guessing for
+    exactly the case that doesn't need it: the question already names the
+    column in plain English."""
+
+    def test_resolves_the_obviously_named_column(self):
+        candidates = [
+            _candidate("underwriting_result_actual", ColumnRole.METRIC),
+            _candidate("gross_written_premium_actual", ColumnRole.METRIC),
+        ]
+        result = _infer_target_column_from_question(
+            "Forecast underwriting result for next 6 months", candidates,
+        )
+        assert result == "underwriting_result_actual"
+
+    def test_longer_match_wins_over_shorter_substring_match(self):
+        # Both "profit" and "net profit" are literal substrings of the
+        # question -- the longer, more specific match must win.
+        candidates = [
+            _candidate("profit_actual", ColumnRole.METRIC),
+            _candidate("net_profit_actual", ColumnRole.METRIC),
+        ]
+        result = _infer_target_column_from_question(
+            "Why did net profit decline vs budget?", candidates,
+        )
+        assert result == "net_profit_actual"
+
+    def test_no_match_returns_none_not_a_guess(self):
+        candidates = [_candidate("marketing_spend_actual", ColumnRole.METRIC)]
+        result = _infer_target_column_from_question(
+            "Forecast underwriting result for next 6 months", candidates,
+        )
+        assert result is None
+
+    def test_ambiguous_tie_returns_none_not_a_guess(self):
+        candidates = [
+            _candidate("revenue_actual", ColumnRole.METRIC),
+            _candidate("revenue_budget", ColumnRole.METRIC),
+        ]
+        # Both base-phrase to "revenue" -- an exact tie, must not guess.
+        result = _infer_target_column_from_question("Explain revenue", candidates)
+        assert result is None
+
+    def test_non_metric_columns_are_never_candidates(self):
+        candidates = [_candidate("underwriting_department", ColumnRole.DIMENSION)]
+        result = _infer_target_column_from_question(
+            "Forecast underwriting department for next 6 months", candidates,
+        )
+        assert result is None
 
 
 class TestDeterministicFeatureSplit:

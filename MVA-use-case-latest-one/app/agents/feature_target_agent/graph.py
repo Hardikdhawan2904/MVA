@@ -65,10 +65,19 @@ Rules:
 
 
 def _build_columns_summary(col_profiles: list, sem_candidates: list, grain_result) -> str:
+    """One compact line per column, no truncation -- a silent [:60] cap
+    here previously meant the LLM could never see (let alone pick) a
+    target column past the 60th, regardless of how well it matched the
+    question. Confirmed live: on a real 141-column dataset,
+    underwriting_result_actual sits at index 88 and was invisible to the
+    agent every time it didn't happen to reach for a lookup tool on its
+    own initiative -- a real, reproducible cause of target selection
+    failing, not generic LLM non-determinism. A few hundred short lines
+    is well within normal context limits; nothing here needs capping."""
     grain_columns = set(grain_result.grain_columns)
     id_scores = {c.column_name: c.identifier_score for c in grain_result.identifier_candidates}
     lines = []
-    for i, p in enumerate(col_profiles[:60]):
+    for i, p in enumerate(col_profiles):
         cand = sem_candidates[i] if i < len(sem_candidates) else None
         role = cand.candidate_column_role.value if cand else "unknown"
         semantic_type = cand.candidate_semantic_type if cand else None
