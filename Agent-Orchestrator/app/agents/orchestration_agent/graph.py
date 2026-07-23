@@ -85,12 +85,26 @@ async def run_orchestrator_pipeline(
     force_reclassify: bool = False,
     business_question: str | None = None,
     target_column: str | None = None,
+    request_rules: str | None = None,
 ) -> dict[str, Any] | JSONResponse:
     """Execute the orchestrator graph. Returns the success dict
     ({"agent1", "agent2", "agent3", "primary_domain_used"}) on completion —
     "agent3" is null/"skipped" outside its Insurance+business_question+CSV
     scope — or a JSONResponse with the same stage/status-code shape the old
-    linear run_pipeline() returned on any Agent 1/2 failure."""
+    linear run_pipeline() returned on any Agent 1/2 failure.
+
+    request_rules: optional JSON string of additional Agent 2 business
+    rules (see MVA-use-case-latest-one's rule_loader.py for the schema) —
+    forwarded to Agent 2 verbatim, on top of the mandatory/expected_unique
+    column inference extract_domain_and_metadata already does. Distinct
+    from that inference: a cross-field consistency rule (e.g. "column A
+    should be <= column B") asserts a real relationship between two
+    specific columns, which nothing about a column's *name* can safely
+    infer — a wrong guess here would score a false relationship as
+    quality, actively eroding trust rather than helping. Left as an
+    explicit, caller-supplied opt-in rather than another auto-inferred
+    default.
+    """
     initial_state: PipelineState = {
         "filename": filename,
         "content_type": content_type,
@@ -99,6 +113,7 @@ async def run_orchestrator_pipeline(
         "force_reclassify": force_reclassify,
         "business_question": business_question,
         "target_column": target_column,
+        "request_rules": request_rules,
     }
 
     final_state = await _graph.ainvoke(initial_state, config={"recursion_limit": 25})

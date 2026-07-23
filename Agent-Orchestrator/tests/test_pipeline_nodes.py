@@ -35,7 +35,8 @@ import pytest
 
 from app.agents.orchestration_agent.nodes.pipeline import (
     AGENT3_CAPABILITIES, Agent3Capabilities, _agent3_skip_reason, _analyze_via_agent3,
-    _canonicalize_domain, _dataset_context_fields, _readiness_and_features,
+    _canonicalize_domain, _dataset_context_fields, _infer_consistency_rules, _infer_mandatory_and_unique,
+    _readiness_and_features,
 )
 
 
@@ -260,3 +261,90 @@ def test_analyze_via_agent3_internal_error_body_passes_through_unchanged():
         result = _run(_analyze_via_agent3("Why?", "data.csv", b"a,b\n1,2", "text/csv", 90.0, 90.0, []))
     assert result == error_body
     assert result["status"] == "error"
+
+
+# ── _infer_mandatory_and_unique ──────────────────────────────────────────────
+#
+# Agent 2's completeness/uniqueness quality dimensions only assess columns
+# explicitly flagged mandatory/expected_unique in schema_metadata — this
+# used to be hardcoded False for everything, permanently capping
+# ml_readiness regardless of how clean the upload was.
+
+def test_identifier_shaped_column_names_are_expected_unique_not_mandatory():
+    for name in ["record_id", "customer_id", "txn_id", "id", "row_uuid", "session_guid"]:
+        mandatory, expected_unique = _infer_mandatory_and_unique(name, "some description")
+        assert expected_unique is True, name
+        assert mandatory is False, name
+
+
+def test_column_explicitly_described_as_unique_identifier_is_expected_unique():
+    mandatory, expected_unique = _infer_mandatory_and_unique("ref_code", "A unique identifier for this record.")
+    assert expected_unique is True
+    assert mandatory is False
+
+
+def test_ordinary_business_columns_default_to_mandatory_not_unique():
+    for name in ["revenue_actual", "store_id_count", "region", "sale_date"]:
+        # "store_id_count" deliberately contains "id" mid-word, not as the
+        # trailing token _infer_mandatory_and_unique's regex requires —
+        # confirms it doesn't over-match every column with "id" anywhere.
+        mandatory, expected_unique = _infer_mandatory_and_unique(name, "a business column")
+        assert mandatory is True, name
+        assert expected_unique is False, name
+
+
+# ── _infer_consistency_rules ─────────────────────────────────────────────────
+#
+# Never guesses a relationship from column names — only proposes a rule
+# when it's empirically true across (near) every row of the actual data.
+
+def _csv_bytes(df) -> bytes:
+    return df.to_csv(index=False).encode("utf-8")
+
+
+def test_infers_genuinely_always_true_relationship():
+    import pandas as pd
+    rng = __import__("numpy").random.default_rng(0)
+    units_sold = rng.integers(50, 200, size=100)
+    customers = (units_sold / rng.uniform(1.5, 2.5, size=100)).astype(int)
+    df = pd.DataFrame({"units_sold": units_sold, "customer_count": customers, "region": ["East"] * 100})
+    rules = _infer_consistency_rules("data.csv", _csv_bytes(df), None)
+    # Either direction is the same fact ("units_sold >= customer_count" ==
+    # "customer_count <= units_sold") -- which one comes out depends only
+    # on column iteration order, not on which is semantically "primary".
+    assert any(
+        {r["left_column"], r["right_column"]} == {"units_sold", "customer_count"}
+        and ((r["left_column"] == "units_sold" and r["operator"] == ">=")
+             or (r["left_column"] == "customer_count" and r["operator"] == "<="))
+        for r in rules
+    ), rules
+
+
+def test_does_not_propose_a_relationship_that_only_mostly_holds():
+    import pandas as pd
+    rng = __import__("numpy").random.default_rng(1)
+    a = rng.integers(1, 100, size=200)
+    b = rng.integers(1, 100, size=200)  # independent -- no real relationship
+    df = pd.DataFrame({"metric_a": a, "metric_b": b})
+    rules = _infer_consistency_rules("data.csv", _csv_bytes(df), None)
+    assert rules == []
+
+
+def test_skips_flag_like_columns_as_trivial_comparison_candidates():
+    import pandas as pd
+    df = pd.DataFrame({
+        "is_active": [0, 1] * 50,             # only 2 distinct values -- flag-like, excluded
+        "revenue": list(range(1, 101)),
+    })
+    rules = _infer_consistency_rules("data.csv", _csv_bytes(df), None)
+    assert not any("is_active" in (r["left_column"], r["right_column"]) for r in rules)
+
+
+def test_too_few_rows_yields_no_inferred_rules():
+    import pandas as pd
+    df = pd.DataFrame({"a": [1, 2, 3], "b": [1, 2, 3]})
+    assert _infer_consistency_rules("data.csv", _csv_bytes(df), None) == []
+
+
+def test_unparseable_content_is_non_fatal():
+    assert _infer_consistency_rules("data.csv", b"not,valid\xff\xfecsv", None) == []

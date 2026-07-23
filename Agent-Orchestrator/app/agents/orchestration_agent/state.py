@@ -15,6 +15,7 @@ class PipelineState(TypedDict, total=False):
     force_reclassify: bool
     business_question: str | None
     target_column: str | None
+    request_rules: str | None
 
     # ── Agent 1 ─────────────────────────────────────────────────────────────
     agent1_status_code: int

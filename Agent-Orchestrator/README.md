@@ -39,6 +39,17 @@ Agent 3 is best-effort and never fails an otherwise-successful pipeline: outside
 
 `agent1.dataframe_records` (the raw uploaded rows) is deliberately stripped from the response before returning — Agent 1 already persists it, and passing it through balloons responses to tens of MB on large files, which Swagger struggles to render.
 
+### Automatic column-quality inference (no manual configuration needed)
+
+Before forwarding to Agent 2, `extract_domain_and_metadata()` (`app/agents/orchestration_agent/nodes/pipeline.py`) automatically infers two things directly from the uploaded file — nothing to configure by hand:
+
+- **`mandatory`/`expected_unique` per column** (`_infer_mandatory_and_unique`): identifier-shaped columns (name ends in `id`/`identifier`/`uuid`/`guid`, or Agent 1's LLM description explicitly calls it a unique identifier) are marked `expected_unique`, never `mandatory`; everything else defaults the other way.
+- **Cross-field consistency rules** (`_infer_consistency_rules`): scans numeric column pairs in the uploaded file itself and proposes a `column_comparison` rule (e.g. `actual <= budget`) only when the relationship empirically holds for ≥99% of jointly-valid rows across a real sample of the data — never guessed from column names, capped at 2 auto-proposed rules. This is what lets Agent 2's `consistency` quality dimension (and therefore `ml_readiness`) reflect real data-driven rules without anyone writing YAML.
+
+Both directly feed Agent 2's `schema_metadata`/`request_rules` fields — see [`MVA-use-case-latest-one/README.md`](../MVA-use-case-latest-one/README.md) for how Agent 2 actually uses them in scoring.
+
+**`request_rules` override**: `/pipeline/run` also accepts an optional `request_rules` form field (a JSON string of additional Agent 2 business rules, forwarded verbatim on top of the automatic inference above) — deliberately *not* shown in Swagger UI, since the normal case needs no manual configuration at all, but it's a real, functional parameter for direct API callers who want to assert a relationship the auto-inference can't verify from its own sample. Read directly off the raw request rather than declared as a FastAPI parameter, which is why it doesn't appear in `/docs`.
+
 ### Agent 3 (Analytics Agent)
 
 Runs whenever **both** of: the upload is a `.csv`, and `business_question` was supplied — for any of Agent 2's 5 supported domains (`Finance`, `Payments`, `Customer`, `HR`, `Insurance`), gated on file type and question only, never domain. Called over `httpx` — the same shape as the call to Agent 2 — posting the file straight through along with Agent 2's `ml_readiness`/`llm_readiness` scores, their full readiness breakdown (`agent2.readiness_assessments[]` — strengths/blocking_issues/evidence, not just the score, extracted by `_readiness_and_features()` in `app/agents/orchestration_agent/nodes/pipeline.py`), and (if present) its `feature_recommendation.feature_columns`. Agent 3's response — including its `execution_trace`/`execution_summary` — is forwarded back through `agent3_body` untouched. See the [root API reference](../API_REFERENCE.md#agent-3--analytics-agent-optional-third-stage) for the full response shapes, and [`Analytics-Agent/README.md`](../Analytics-Agent/README.md) for what it does internally.

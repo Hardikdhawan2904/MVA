@@ -4,7 +4,7 @@ and Agent 2 (MVA Data Profiling Engine) via a LangGraph StateGraph (app/agents/o
 Each future agent added to the pipeline becomes another node in that same graph.
 """
 
-from fastapi import APIRouter, UploadFile, File, Form
+from fastapi import APIRouter, Request, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 import httpx
 
@@ -18,6 +18,7 @@ router = APIRouter(prefix="/pipeline", tags=["Pipeline"])
 
 @router.post("/run")
 async def run_pipeline(
+    request: Request,
     file: UploadFile = File(..., description="CSV or Excel dataset to run through the full pipeline"),
     sheet_name: str | None = Form(
         default=None,
@@ -56,8 +57,8 @@ async def run_pipeline(
     stops with a clear error rather than guessing.
 
     3. Agent 3 (Analytics Agent, vendored at Analytics-Agent/, port 8003) —
-       optional. Only runs when Agent 1 classified the upload as Insurance,
-       the file is a CSV, and a business_question was supplied — it answers
+       optional. Runs for any of Agent 2's 5 supported domains, gated only on
+       file type (`.csv`) and a supplied business_question — it answers
        exactly that one question using Agent 2's ML/LLM-readiness scores.
        Outside that scope it's skipped (`agent3.status == "skipped"`) without
        affecting Agent 1/2's results; a broken Agent 3 invocation likewise
@@ -66,10 +67,26 @@ async def run_pipeline(
     To ask Agent 3 a *different* question against the same dataset
     afterwards, use `POST /pipeline/ask` instead of calling this again —
     it skips Agent 1's quality gate and Agent 2's full profiling entirely.
+
+    Not shown above (and deliberately not a declared, Swagger-visible
+    parameter): an optional `request_rules` multipart field — a JSON string
+    of additional Agent 2 business rules (e.g. `[{"type": "column_comparison",
+    "rule_key": "...", "left_column": "...", "right_column": "...",
+    "operator": "<="}]`), forwarded to Agent 2 verbatim on top of the
+    mandatory/expected_unique inference already applied automatically. Left
+    unset (the normal case), the Orchestrator infers consistency rules
+    straight from the uploaded file itself — nothing to configure. It's kept
+    as a direct-API-caller escape hatch for asserting a relationship the
+    auto-inference can't verify from its own sample, without prompting every
+    Swagger UI user for something that's already automatic.
     """
     content = await file.read()
     filename = file.filename or "upload"
     content_type = file.content_type or "application/octet-stream"
+
+    form = await request.form()
+    request_rules = form.get("request_rules")
+    request_rules = str(request_rules) if request_rules else None
 
     return await run_orchestrator_pipeline(
         filename=filename,
@@ -79,6 +96,7 @@ async def run_pipeline(
         force_reclassify=force_reclassify,
         business_question=business_question,
         target_column=target_column,
+        request_rules=request_rules,
     )
 
 

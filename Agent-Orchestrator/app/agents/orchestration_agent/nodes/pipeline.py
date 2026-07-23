@@ -10,14 +10,116 @@ early `return`s inside one function body.
 
 from __future__ import annotations
 
+import io
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 import httpx
+import pandas as pd
 
 from app.config import settings
 from app.agents.orchestration_agent.state import PipelineState
+
+# Agent 2's completeness/uniqueness quality dimensions are rule-driven, not
+# computed from raw data automatically (see MVA-use-case-latest-one's
+# app/services/quality/completeness.py / uniqueness.py) -- they only assess
+# columns explicitly flagged mandatory/expected_unique in schema_metadata.
+# This used to hardcode both flags False for every column, meaning no
+# upload -- however clean -- could ever have completeness/uniqueness
+# assessed through the normal pipeline, permanently capping ml_readiness
+# ~30 points below what a genuinely clean, well-labeled dataset should
+# earn. Agent 1 doesn't expose per-column semantic roles (that's Agent 2's
+# own job, running *after* this request), so the only signal available at
+# this integration point is the column name itself and its LLM-written
+# description -- a real, if simple, heuristic rather than no signal at all.
+_IDENTIFIER_NAME_RE = re.compile(r"(^|_)(id|identifier|uuid|guid)$", re.IGNORECASE)
+
+
+def _infer_mandatory_and_unique(column_name: str, description: str) -> tuple[bool, bool]:
+    """Identifier-shaped columns (name ends in id/identifier/uuid/guid, or
+    the LLM description explicitly calls it a unique identifier) are
+    expected_unique, never mandatory in the completeness sense -- a missing
+    ID usually means a missing row, not an incomplete one. Every other
+    column defaults to mandatory: a substantive business column that's
+    mostly null is a genuine completeness problem worth scoring."""
+    is_identifier_like = bool(_IDENTIFIER_NAME_RE.search(column_name)) or "unique identifier" in (description or "").lower()
+    return (not is_identifier_like, is_identifier_like)
+
+
+# Agent 2's "consistency" quality dimension needs an actual cross-field
+# business rule (column_comparison) -- unlike mandatory/expected_unique,
+# there's no safe way to *guess* one from a column's name alone (asserting
+# a false relationship, e.g. "revenue >= marketing_spend", would actively
+# score a wrong claim as quality). But a relationship that genuinely,
+# empirically holds across (near) every row of the real uploaded data
+# isn't a guess -- it's an observed fact about this specific file. This
+# scans numeric column pairs for exactly that: a >=, <=, or == relationship
+# holding for at least 99% of jointly-valid rows, real sample size
+# required, near-constant/flag-like columns excluded (a binary flag
+# trivially "holds" against everything, which isn't a meaningful
+# invariant), capped at 2 rules so a wide dataset doesn't get flooded with
+# spurious asserted relationships. Best-effort and non-fatal throughout --
+# parsing failures or a dataset with no qualifying pair just mean no
+# auto-inferred rules, never a broken pipeline.
+_MIN_ROWS_FOR_CONSISTENCY_INFERENCE = 30
+_CONSISTENCY_INVARIANT_THRESHOLD = 0.99
+_MAX_AUTO_INFERRED_CONSISTENCY_RULES = 2
+_FLAG_LIKE_MAX_DISTINCT_VALUES = 3
+
+
+def _read_dataframe_best_effort(filename: str, content: bytes, sheet_name: str | None) -> pd.DataFrame | None:
+    try:
+        if filename.lower().endswith((".xlsx", ".xls")):
+            return pd.read_excel(io.BytesIO(content), sheet_name=sheet_name or 0)
+        return pd.read_csv(io.BytesIO(content))
+    except Exception:
+        return None
+
+
+def _infer_consistency_rules(filename: str, content: bytes, sheet_name: str | None) -> list[dict[str, Any]]:
+    df = _read_dataframe_best_effort(filename, content, sheet_name)
+    if df is None or len(df) < _MIN_ROWS_FOR_CONSISTENCY_INFERENCE:
+        return []
+
+    numeric_cols = [
+        c for c in df.select_dtypes(include="number").columns
+        if not _IDENTIFIER_NAME_RE.search(c) and df[c].nunique(dropna=True) > _FLAG_LIKE_MAX_DISTINCT_VALUES
+    ]
+
+    candidates: list[tuple[float, dict[str, Any]]] = []
+    for i, left in enumerate(numeric_cols):
+        for right in numeric_cols[i + 1:]:
+            both_valid = df[left].notna() & df[right].notna()
+            total = int(both_valid.sum())
+            if total < _MIN_ROWS_FOR_CONSISTENCY_INFERENCE:
+                continue
+            lv, rv = df.loc[both_valid, left], df.loc[both_valid, right]
+            ge_frac = float((lv >= rv).mean())
+            le_frac = float((lv <= rv).mean())
+
+            if ge_frac >= _CONSISTENCY_INVARIANT_THRESHOLD and le_frac >= _CONSISTENCY_INVARIANT_THRESHOLD:
+                operator, frac = "==", min(ge_frac, le_frac)
+            elif ge_frac >= _CONSISTENCY_INVARIANT_THRESHOLD:
+                operator, frac = ">=", ge_frac
+            elif le_frac >= _CONSISTENCY_INVARIANT_THRESHOLD:
+                operator, frac = "<=", le_frac
+            else:
+                continue
+
+            op_slug = {"==": "eq", ">=": "ge", "<=": "le"}[operator]
+            candidates.append((frac, {
+                "type": "column_comparison",
+                "rule_key": f"auto_inferred_{left}_{op_slug}_{right}",
+                "left_column": left,
+                "right_column": right,
+                "operator": operator,
+                "severity": "medium",
+            }))
+
+    candidates.sort(key=lambda pair: pair[0], reverse=True)
+    return [rule for _frac, rule in candidates[:_MAX_AUTO_INFERRED_CONSISTENCY_RULES]]
 
 # Agent 1's classification is open-vocabulary LLM output (its prompt only
 # *suggests* 14 domain names, e.g. "Human Resources" — see
@@ -317,18 +419,29 @@ class OrchestratorGraphNodes:
         primary_domain = _canonicalize_domain(primary_domain)
 
         column_descriptions = agent1_body.get("column_descriptions") or {}
-        schema_metadata = {
-            "columns": [
-                {
-                    "column_name": col_name,
-                    "description": description,
-                    "mandatory": False,
-                    "expected_unique": False,
-                }
-                for col_name, description in column_descriptions.items()
-            ]
-        }
-        return {"primary_domain": primary_domain, "schema_metadata": schema_metadata}
+        columns_metadata = []
+        for col_name, description in column_descriptions.items():
+            mandatory, expected_unique = _infer_mandatory_and_unique(col_name, description)
+            columns_metadata.append({
+                "column_name": col_name,
+                "description": description,
+                "mandatory": mandatory,
+                "expected_unique": expected_unique,
+            })
+        schema_metadata = {"columns": columns_metadata}
+
+        request_rules = state.get("request_rules")
+        if not request_rules:
+            # Caller didn't supply any business rules -- try to find genuine,
+            # empirically-observed ones in the data itself rather than
+            # leaving "consistency" permanently unassessable. Best-effort:
+            # an inference failure or a dataset with no qualifying pair
+            # just means no rules, same as today.
+            inferred = _infer_consistency_rules(state["filename"], state["content"], state.get("sheet_name"))
+            if inferred:
+                request_rules = json.dumps(inferred)
+
+        return {"primary_domain": primary_domain, "schema_metadata": schema_metadata, "request_rules": request_rules}
 
     def route_after_domain(self, state: PipelineState) -> Literal["stop", "continue"]:
         return "stop" if state.get("error_content") is not None else "continue"
@@ -340,7 +453,7 @@ class OrchestratorGraphNodes:
         data = {
             "primary_domain": state["primary_domain"],
             "schema_metadata": json.dumps(state["schema_metadata"]),
-            "request_rules": "[]",
+            "request_rules": state.get("request_rules") or "[]",
         }
         if state.get("sheet_name"):
             data["sheet_name"] = state["sheet_name"]
