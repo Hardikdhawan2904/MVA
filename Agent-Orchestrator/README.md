@@ -7,7 +7,9 @@ Expressed as a LangGraph `StateGraph` (`app/agents/orchestration_agent/`) rather
 ## Architecture
 
 ```
-Upload → Agent 1 (classify + quality gate) → Agent 2 (profile, using Agent 1's classification)
+Upload → Dataset Registry (Stage 0A: fingerprint + duplicate/version check)
+       → cache hit? → Agent 3 directly, Agent 1 + Agent 2 skipped, cached results served
+       → cache miss? → Agent 1 (classify + quality gate) → Agent 2 (profile, using Agent 1's classification)
        → Agent 3 (optional — any of Agent 2's 5 supported domains, + business_question + CSV only)
        → combined response
 ```
@@ -22,8 +24,12 @@ Agent 3 is best-effort and never fails an otherwise-successful pipeline: outside
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/pipeline/run` | Runs a file through the pipeline. Accepts `file` (required), `sheet_name` (optional — required only for multi-sheet XLSX workbooks), `force_reclassify` (optional boolean, re-runs Agent 1's classification if the filename already exists in its catalog), `business_question` (optional — also drives Agent 3, see below), `target_column` (optional — explicit override for Agent 2's target-column guessing). |
+| POST | `/pipeline/run` | Runs a file through the pipeline. Accepts `file` (required), `sheet_name` (optional — required only for multi-sheet XLSX workbooks), `force_reclassify` (optional boolean, re-runs Agent 1's classification if the filename already exists in its catalog), `force_revalidate` (optional boolean, bypasses the Dataset Registry's cache and re-runs Agent 1 + Agent 2 fresh even for byte-identical content already processed before — implies `force_reclassify`), `business_question` (optional — also drives Agent 3, see below), `target_column` (optional — explicit override for Agent 2's target-column guessing). |
 | POST | `/pipeline/ask` | Re-ask Agent 3 a *different* `business_question` against a dataset that already went through `/pipeline/run`, without repeating Agent 1's quality gate or Agent 2's full profiling. See below. |
+| GET | `/datasets/masters` | List Master Datasets registered in the Dataset Registry (fingerprint, filename, version, row/column counts, reference count). |
+| GET | `/datasets/masters/{fingerprint}/copies` | List the upload/copy history for a Master Dataset. |
+| DELETE | `/datasets/copies/{copy_id}` | Soft-delete one upload's copy record. Never touches the underlying Master Dataset. |
+| DELETE | `/datasets/masters/{fingerprint}?force=` | Delete a Master Dataset and its physical file. Refuses with `409` if active copies still reference it, unless `force=true`. |
 | GET | `/health` | Health check — also pings Agent 1 and Agent 2 so it's obvious what's actually reachable (Agent 3 isn't pinged here since it's optional/best-effort). |
 
 ### Response shape
@@ -33,11 +39,25 @@ Agent 3 is best-effort and never fails an otherwise-successful pipeline: outside
   "agent1": { "...": "Agent 1's full response (raw row data stripped out)" },
   "agent2": { "...": "Agent 2's full profiling result, including rule_suggestions" },
   "agent3": { "...": "Agent 3's answer, or {\"status\": \"skipped\", ...} outside its scope" },
-  "primary_domain_used": "Finance"
+  "primary_domain_used": "Finance",
+  "fingerprint": "sha256 of the raw uploaded bytes",
+  "copy_id": "uuid — this upload's own DatasetCopy record, always new even on a cache hit",
+  "was_cached": false
 }
 ```
 
 `agent1.dataframe_records` (the raw uploaded rows) is deliberately stripped from the response before returning — Agent 1 already persists it, and passing it through balloons responses to tens of MB on large files, which Swagger struggles to render.
+
+### Dataset Registry (Stage 0A)
+
+Deterministic infrastructure, not an agent — sits in front of Agent 1/Agent 2 and answers one question: "has this exact content been fully processed before?" Implemented in `app/services/dataset_registry/` (`dataset_registry.py`'s `DatasetRegistry` facade, `fingerprint.py`, `storage.py`, `metadata_cache.py`, `duplicate_detector.py`, `version_manager.py`, `reference_counter.py`), wired in as the graph's new entry point (`resolve_dataset_identity`) in `app/agents/orchestration_agent/graph.py`.
+
+- **Identity**: SHA-256 of the raw uploaded bytes — exact match only, no fuzzy/near-duplicate detection. A byte-identical re-upload shares a **Master Dataset**; any change at all (even one cell) gets its own.
+- **Versioning**: a re-upload under a filename the Registry has already seen, but with different content, is treated as a new *version* of the same logical dataset (`latest_version` increments, `previous_fingerprint` links back) rather than either overwriting history or being mistaken for something unrelated.
+- **Storage**: Master Dataset bytes are written once, content-addressed, under `MASTER_DATASET_STORAGE_DIR` (default `C:\MVAData\master-datasets\<hash[:2]>\<hash>.<ext>`). Every upload — hit or miss — creates its own lightweight `DatasetCopy` record; deleting a copy only ever removes that reference, never the Master Dataset. The Master Dataset itself is a reference-counted, separate, deliberate action — `DELETE /datasets/masters/{fingerprint}` refuses unless forced when active copies still exist.
+- **Caching**: on a cache hit, Agent 1's and Agent 2's cached responses are served directly (`master_dataset_results`, keyed by fingerprint) and neither service is actually called. Agent 3 is never cached/skipped — its answer depends on the specific `business_question`, not just dataset identity, so it runs on every request regardless of the Stage 0A outcome.
+- **Non-fatal by design**: a Postgres outage or unwritable storage directory degrades to "the cache always misses, the pipeline runs exactly as it did before this feature existed" — never breaks the core relay function.
+- Bootstraps its own Postgres schema (`orchestrator`, 3 tables: `master_datasets`, `dataset_copies`, `master_dataset_results`) on startup, in the same shared native Postgres instance as Agent 1/2/3 — see [`Shared-Postgres/README.md`](../Shared-Postgres/README.md).
 
 ### Automatic column-quality inference (no manual configuration needed)
 
@@ -97,8 +117,14 @@ Agent 1, Agent 2, and (if you want the analytics Q&A stage) Agent 3 must already
 | REQUEST_TIMEOUT_SECONDS | 120.0 | Timeout for calls to Agent 1/Agent 2 |
 | ANALYTICS_AGENT_BASE_URL | http://127.0.0.1:8003 | Base URL for Agent 3 |
 | ANALYTICS_AGENT_TIMEOUT_SECONDS | 120.0 | Timeout for the call to Agent 3 |
+| POSTGRES_HOST | localhost | Shared Postgres host (Dataset Registry, schema `orchestrator`) |
+| POSTGRES_PORT | 5433 | Shared Postgres port |
+| POSTGRES_DB | mva_pipeline | Shared Postgres database |
+| POSTGRES_USER | postgres | Shared Postgres user |
+| POSTGRES_PASSWORD | postgres | Shared Postgres password |
+| MASTER_DATASET_STORAGE_DIR | C:\MVAData\master-datasets | Content-addressed physical storage for Master Dataset bytes |
 
-No API keys or secrets live here — LLM credentials belong to Agent 1, Agent 2, and Agent 3 individually.
+No API keys or secrets live here — LLM credentials belong to Agent 1, Agent 2, and Agent 3 individually. The `POSTGRES_*`/`MASTER_DATASET_STORAGE_DIR` keys are usually inherited from the shared root `.env` (see the [root README](../README.md)) — only needed here if this service points at a different Postgres instance than the rest of the pipeline.
 
 ## Running Tests
 
@@ -139,4 +165,4 @@ curl -X POST http://localhost:8002/pipeline/ask \
 - No retry/circuit-breaker logic on the calls to Agent 1/Agent 2/Agent 3 — a transient failure surfaces immediately as a `502` (Agent 1/2) or `agent3.status == "failed"` (Agent 3) rather than being retried
 - No authentication in v1
 - Domain auto-derivation canonicalizes known synonyms of Agent 1's broader vocabulary onto Agent 2's 5 supported domains (`_canonicalize_domain()` / `_DOMAIN_SYNONYMS` in `app/agents/orchestration_agent/nodes/pipeline.py` — e.g. `"Human Resources"` → `"HR"`, case variants), but the map is finite: an unrecognized synonym still fails Agent 2's exact-match check. Notably, Agent 1's classification prompt doesn't suggest `"Payments"` or `"Customer"` as domain names at all (see `Schema-Intelligence-Layer/app/prompts/llm_service_prompt.py`), so those two domains rarely get classified into by Agent 1 in the first place — no amount of synonym-mapping here fixes that; it would need a prompt change in Agent 1.
-- `POST /pipeline/ask` requires re-uploading the file — there's no durable storage of raw dataset rows anywhere in the pipeline today (see "Why the file still has to be re-uploaded" above). Adding that (e.g. Agent 1 writing bytes to S3/Postgres keyed by `dataset_id`, plus a `dataset_id` column on Agent 2's `profile_runs`) would let a future version drop this requirement.
+- `POST /pipeline/ask` still requires re-uploading the file, even though the Dataset Registry (Stage 0A) now durably stores every upload's raw bytes, content-addressed by fingerprint (`app/services/dataset_registry/storage.py`). The durable storage this limitation used to say didn't exist now does — `/pipeline/ask` just isn't wired to look the file up by `run_id`/fingerprint yet, it's a genuinely closeable gap now rather than a missing capability. Read directly by `SQLTool`, that lookup would let a future version drop the re-upload requirement entirely.

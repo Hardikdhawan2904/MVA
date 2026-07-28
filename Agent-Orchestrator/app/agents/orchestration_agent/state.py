@@ -13,9 +13,16 @@ class PipelineState(TypedDict, total=False):
     content: bytes
     sheet_name: str | None
     force_reclassify: bool
+    force_revalidate: bool
     business_question: str | None
     target_column: str | None
     request_rules: str | None
+
+    # ── Dataset Registry (Stage 0A) ────────────────────────────────────────
+    file_extension: str
+    fingerprint: str | None
+    copy_id: str | None
+    was_cached: bool
 
     # ── Agent 1 ─────────────────────────────────────────────────────────────
     agent1_status_code: int

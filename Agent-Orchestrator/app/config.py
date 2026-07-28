@@ -39,6 +39,16 @@ class Settings(BaseSettings):
 
     LOG_LEVEL: str = "INFO"
 
+    # Dataset Registry (Stage 0A) — content-fingerprinted Master Dataset
+    # storage, shared with Agent 1/2/3 via the same native Postgres instance
+    # (see Shared-Postgres/README.md), own schema "orchestrator".
+    POSTGRES_HOST: str = "localhost"
+    POSTGRES_PORT: int = 5433
+    POSTGRES_DB: str = "mva_pipeline"
+    POSTGRES_USER: str = "postgres"
+    POSTGRES_PASSWORD: str = "postgres"
+    MASTER_DATASET_STORAGE_DIR: str = r"C:\MVAData\master-datasets"
+
     class Config:
         env_file = (_ROOT_ENV, ".env")
         env_file_encoding = "utf-8"

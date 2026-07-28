@@ -2,6 +2,9 @@
 
 Topology:
 
+  resolve_dataset_identity ─(cache_hit)─────────────────────────────────────→ call_agent3
+      │(cache_miss)
+      ▼
   call_agent1 ─(stop)──────────────────────────────────────────────→ END (error)
       │(continue)
       ▼
@@ -14,6 +17,9 @@ Topology:
   fetch_agent2_result ─(stop)───────────────────────────────────────→ END (error)
       │(continue)
       ▼
+  persist_master_dataset (best-effort — never routes to "stop")
+      │
+      ▼
   call_agent3 (best-effort — never routes to "stop")
       │
       ▼
@@ -23,6 +29,15 @@ Each "stop" branch means a node already populated error_status_code /
 error_content in state — the graph doesn't need a dedicated error node,
 routing straight to END is enough since run_orchestrator_pipeline() reads
 those two fields directly off the final state.
+
+resolve_dataset_identity (Stage 0A — Dataset Registry, see the architecture
+doc's "Dataset Registry & Lifecycle Management" section) is deterministic
+infrastructure, not an agent: on a duplicate upload with an already-cached
+pipeline result it fabricates agent1_body/agent2_full_result/primary_domain
+directly and routes straight to call_agent3, skipping Agent 1 and Agent 2
+entirely; a genuinely new dataset, a new version, or a
+force_revalidate/force_reclassify request falls through the existing chain
+unchanged.
 """
 
 from typing import Any
@@ -43,15 +58,21 @@ def build_orchestrator_graph():
     built once at import time and reused for every request."""
     g = StateGraph(PipelineState)
 
+    g.add_node("resolve_dataset_identity", _nodes.resolve_dataset_identity)
     g.add_node("call_agent1", _nodes.call_agent1)
     g.add_node("extract_domain_and_metadata", _nodes.extract_domain_and_metadata)
     g.add_node("call_agent2", _nodes.call_agent2)
     g.add_node("fetch_agent2_result", _nodes.fetch_agent2_result)
+    g.add_node("persist_master_dataset", _nodes.persist_master_dataset)
     g.add_node("call_agent3", _nodes.call_agent3)
     g.add_node("finalize", _nodes.finalize)
 
     g.set_entry_point(get_entry_point())
 
+    g.add_conditional_edges(
+        "resolve_dataset_identity", _nodes.route_after_identity,
+        {"cache_hit": "call_agent3", "cache_miss": "call_agent1"},
+    )
     g.add_conditional_edges(
         "call_agent1", _nodes.route_after_agent1,
         {"stop": END, "continue": "extract_domain_and_metadata"},
@@ -66,8 +87,9 @@ def build_orchestrator_graph():
     )
     g.add_conditional_edges(
         "fetch_agent2_result", _nodes.route_after_fetch,
-        {"stop": END, "continue": "call_agent3"},
+        {"stop": END, "continue": "persist_master_dataset"},
     )
+    g.add_edge("persist_master_dataset", "call_agent3")
     g.add_edge("call_agent3", "finalize")
     g.add_edge("finalize", END)
 
@@ -83,6 +105,7 @@ async def run_orchestrator_pipeline(
     content: bytes,
     sheet_name: str | None = None,
     force_reclassify: bool = False,
+    force_revalidate: bool = False,
     business_question: str | None = None,
     target_column: str | None = None,
     request_rules: str | None = None,
@@ -111,6 +134,7 @@ async def run_orchestrator_pipeline(
         "content": content,
         "sheet_name": sheet_name,
         "force_reclassify": force_reclassify,
+        "force_revalidate": force_revalidate,
         "business_question": business_question,
         "target_column": target_column,
         "request_rules": request_rules,

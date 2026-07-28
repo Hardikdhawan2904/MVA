@@ -44,15 +44,20 @@ agent:
     state_schema: PipelineState
 
     pipeline:
-      entry_point: call_agent1
+      entry_point: resolve_dataset_identity
       nodes:
+        - resolve_dataset_identity   # Stage 0A — Dataset Registry (not an agent, deterministic infra)
         - call_agent1
         - extract_domain_and_metadata
         - call_agent2
         - fetch_agent2_result
+        - persist_master_dataset     # best-effort cache write, cache-miss path only
         - call_agent3        # optional, best-effort — see constraints above
         - finalize
       conditional_edges:
+        - from: resolve_dataset_identity
+          router: route_after_identity
+          routes: { cache_hit: call_agent3, cache_miss: call_agent1 }
         - from: call_agent1
           router: route_after_agent1
           routes: { stop: END, continue: extract_domain_and_metadata }
@@ -64,8 +69,10 @@ agent:
           routes: { stop: END, continue: fetch_agent2_result }
         - from: fetch_agent2_result
           router: route_after_fetch
-          routes: { stop: END, continue: call_agent3 }
+          routes: { stop: END, continue: persist_master_dataset }
       edges:
+        - from: persist_master_dataset
+          to: call_agent3     # unconditional — a caching write failure never blocks the pipeline
         - from: call_agent3
           to: finalize        # unconditional — call_agent3 never stops the pipeline on its own failure
         - from: finalize
@@ -80,6 +87,9 @@ agent:
       agent3:               "Agent 3's (Analytics Agent) answer — {status: ok, execution_trace, execution_summary, ...} |
                               {status: skipped, reason} | {status: failed, reason}. Always present with a status field."
       primary_domain_used: "The business_domain derived from Agent 1's classification and passed to Agent 2"
+      fingerprint:          "SHA-256 content fingerprint the Dataset Registry (Stage 0A) computed for this upload"
+      copy_id:               "This upload's DatasetCopy record id — a new one is created on every call, hit or miss"
+      was_cached:             "True if this response was served from the Dataset Registry's cache (Agent 1/2 not called)"
 
   # ── Invocation ──────────────────────────────────────────────────────────────
   invocation:
@@ -87,6 +97,6 @@ agent:
     file: app/agents/orchestration_agent/graph.py
     signature: >
       run_orchestrator_pipeline(filename, content_type, content, sheet_name,
-      force_reclassify, business_question, target_column) -> dict | JSONResponse
+      force_reclassify, force_revalidate, business_question, target_column) -> dict | JSONResponse
     called_from:
       - "app/routes/pipeline.py -> run_pipeline"

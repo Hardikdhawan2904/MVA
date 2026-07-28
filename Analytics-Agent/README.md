@@ -58,7 +58,13 @@ A thin `app/main.py`/`app/routes/analyze.py` shell over a LangGraph `StateGraph`
 | Plugin | Curated KPIs | Driver columns | Preferred deterministic strategy | Notes |
 |---|---|---|---|---|
 | `InsurancePlugin` | 17 (Gross Written Premium, Loss Ratio, Combined Ratio, Underwriting Result, ...) | 14 pre-computed variance drivers | Linear Trend (forecast), Z-Score (anomaly), Insurance Combined Ratio Buckets (segmentation) | Reference domain — byte-identical to the pre-redesign agent for every existing query shape |
-| `GenericDomainPlugin` | None (empty catalog) | None (correlation-based root cause instead) | None (registry default order) | The true "no plugin matched" fallback — used whenever `detected_domain` isn't forwarded or doesn't match a registered plugin, so an unrelated dataset never silently inherits Insurance's KPI catalog |
+| `FinancePlugin` | 3 (Net Profit, Revenue, Operating Cost) | None (correlation-based root cause) | None (registry default order) | Thin starter — `ThinKPIDomainPlugin`-based |
+| `HRPlugin` | 3 (Headcount, Attrition Rate, Payroll Cost) | None (correlation-based root cause) | None (registry default order) | Thin starter — `ThinKPIDomainPlugin`-based |
+| `PaymentsPlugin` | 3 (Transaction Volume, Authorization Success Rate, Fraud Rate) | None (correlation-based root cause) | None (registry default order) | Thin starter — `ThinKPIDomainPlugin`-based |
+| `CustomerPlugin` | 3 (Customer Satisfaction Score, Churn Rate, Customer Lifetime Value) | None (correlation-based root cause) | None (registry default order) | Thin starter — `ThinKPIDomainPlugin`-based |
+| `GenericDomainPlugin` | None (empty catalog) | None (correlation-based root cause instead) | None (registry default order) | The true "no plugin matched" fallback — used whenever `detected_domain` isn't forwarded or doesn't match any registered plugin, so an unrelated dataset never silently inherits Insurance's KPI catalog |
+
+The four "thin starter" plugins (`app/services/domain_plugins/thin_kpi_plugin.py`) are a curated KPI catalog plus `kpi_summary`/`kpi_variance` question-answering only — no driver columns (no labeled-mode root cause), no ML-feature-column overrides, unlike `InsurancePlugin`'s fully-built implementation. They still resolve KPI aliases (e.g. "net profit" → `net_profit`) via `get_intent_vocabulary()` and inject the matching analysis via `enhance_plan()` — deliberately narrower than Insurance's own `enhance_plan()`, but never worse than `GenericDomainPlugin`'s generic report for anything they don't cover.
 
 `PluginRegistry.find_plugin(detected_domain)` matches on Agent 1's canonicalized domain string; adding a new domain is one new plugin (KPI definitions + optional driver columns), zero changes to the generic Stage 1-9 core.
 
@@ -177,7 +183,7 @@ Trains Prophet-free LightGBM, IsolationForest, XGBoost, and K-Means against `DAT
 - Only CSV uploads, no Excel.
 - No authentication in v1.
 - Multi-turn conversation memory only works when a caller explicitly passes `conversation_id` back on each request — `Agent-Orchestrator` doesn't do this today (it's intentionally stateless), so pipeline-driven questions each start a fresh conversation. Only a direct `POST /analyze` caller (or `scripts/cli.py --interactive`) gets continuity.
-- Finance/HR/Payments/Customer domain plugins are not yet built — those datasets currently get `GenericDomainPlugin` (fully functional report mode, no curated KPI catalog) rather than a domain-specific one.
+- Finance/HR/Payments/Customer now have thin starter domain plugins (curated KPI catalog + `kpi_summary`/`kpi_variance` only, see the Domain Enhancement Layer table above) — none have driver columns or ML-feature-column overrides yet, so labeled-mode root cause and Insurance-style ML corroboration still only apply to Insurance. A domain with no registered plugin at all still gets `GenericDomainPlugin`'s fully functional generic report.
 
 ## Decisions Log
 

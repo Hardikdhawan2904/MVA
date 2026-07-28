@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Literal
 
 import httpx
@@ -21,6 +23,20 @@ import pandas as pd
 
 from app.config import settings
 from app.agents.orchestration_agent.state import PipelineState
+from app.services.dataset_registry.dataset_registry import DatasetRegistry
+
+logger = logging.getLogger(__name__)
+
+_dataset_registry: DatasetRegistry | None = None
+
+
+def get_dataset_registry() -> DatasetRegistry:
+    """Stage 0A facade, lazily constructed once per process — stateless
+    beyond the configured storage dir, safe to share across requests."""
+    global _dataset_registry
+    if _dataset_registry is None:
+        _dataset_registry = DatasetRegistry(settings.MASTER_DATASET_STORAGE_DIR)
+    return _dataset_registry
 
 # Agent 2's completeness/uniqueness quality dimensions are rule-driven, not
 # computed from raw data automatically (see MVA-use-case-latest-one's
@@ -380,6 +396,58 @@ class OrchestratorGraphNodes:
     namespacing, no shared mutable state between requests (a fresh
     httpx.AsyncClient is opened per HTTP call, same lifecycle as before)."""
 
+    # ── Node 0A: Dataset Registry — fingerprint, duplicate/version detection ──
+    # Not an AI agent — deterministic infrastructure (see the architecture
+    # doc's "Dataset Registry & Lifecycle Management" section). On a
+    # duplicate upload with an already-cached pipeline result, this node
+    # fabricates agent1_body/agent2_full_result/primary_domain directly —
+    # the exact three fields finalize() already reads off state — so
+    # call_agent1/call_agent2/fetch_agent2_result never run at all. A
+    # genuinely new dataset, a new version, or a force_revalidate/
+    # force_reclassify request falls through to the existing chain
+    # unchanged.
+
+    async def resolve_dataset_identity(self, state: PipelineState) -> dict[str, Any]:
+        file_extension = Path(state["filename"]).suffix or ""
+
+        try:
+            result = get_dataset_registry().register(
+                filename=state["filename"], file_extension=file_extension, content=state["content"],
+            )
+        except Exception as e:
+            # Non-fatal degrade: Postgres/storage unavailable -> cache
+            # always misses, pipeline runs exactly as it did before this
+            # feature existed.
+            logger.warning(f"Dataset Registry unavailable — running without cache: {e}")
+            return {"file_extension": file_extension, "fingerprint": None, "copy_id": None, "was_cached": False}
+
+        force = bool(state.get("force_revalidate") or state.get("force_reclassify"))
+
+        if result.was_duplicate and result.cached_result is not None and not force:
+            return {
+                "file_extension": file_extension,
+                "fingerprint": result.master.fingerprint,
+                "copy_id": result.copy.copy_id,
+                "was_cached": True,
+                "agent1_body": result.cached_result.agent1_body,
+                "agent2_full_result": result.cached_result.agent2_full_result,
+                "primary_domain": result.cached_result.primary_domain,
+            }
+
+        return {
+            "file_extension": file_extension,
+            "fingerprint": result.master.fingerprint,
+            "copy_id": result.copy.copy_id,
+            "was_cached": False,
+            # force_revalidate reaching Agent 1 as force_reclassify is what
+            # makes "correct a bad past classification" actually work end
+            # to end, instead of only bypassing this node's own cache.
+            "force_reclassify": force,
+        }
+
+    def route_after_identity(self, state: PipelineState) -> Literal["cache_hit", "cache_miss"]:
+        return "cache_hit" if state.get("was_cached") else "cache_miss"
+
     # ── Node 1: Agent 1 (Schema Intelligence Layer) ─────────────────────────
 
     async def call_agent1(self, state: PipelineState) -> dict[str, Any]:
@@ -557,6 +625,33 @@ class OrchestratorGraphNodes:
     def route_after_fetch(self, state: PipelineState) -> Literal["stop", "continue"]:
         return "stop" if state.get("error_content") is not None else "continue"
 
+    # ── Node: persist Dataset Registry cache entry (cache-miss path only) ────
+    # Runs once Agent 1 + Agent 2 have both succeeded, so the next
+    # byte-identical upload becomes a cache hit. Never fails the pipeline —
+    # a caching write failure is logged and swallowed, same principle as
+    # call_agent3's own best-effort framing below.
+
+    def persist_master_dataset(self, state: PipelineState) -> dict[str, Any]:
+        fingerprint = state.get("fingerprint")
+        if not fingerprint:
+            return {}
+        try:
+            agent1_body = state.get("agent1_body") or {}
+            agent2_full_result = state.get("agent2_full_result") or {}
+            row_count = agent1_body.get("row_count") if isinstance(agent1_body, dict) else None
+            column_count = agent1_body.get("column_count") if isinstance(agent1_body, dict) else None
+            get_dataset_registry().persist_result(
+                fingerprint=fingerprint,
+                primary_domain=state.get("primary_domain") or "",
+                agent1_body=agent1_body,
+                agent2_full_result=agent2_full_result,
+                row_count=row_count,
+                column_count=column_count,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to persist Dataset Registry cache entry for {fingerprint}: {e}")
+        return {}
+
     # ── Node 5: Agent 3 (Analytics Agent) ────────────────────────────────────
     # Vendored at mva/Analytics-Agent (originally github.com/VirenKhapra/
     # Analytics-agent-for-project-3), now a FastAPI service (port 8003) like
@@ -603,5 +698,8 @@ class OrchestratorGraphNodes:
                 "agent2": state["agent2_full_result"],
                 "agent3": state.get("agent3_body"),
                 "primary_domain_used": state["primary_domain"],
+                "fingerprint": state.get("fingerprint"),
+                "copy_id": state.get("copy_id"),
+                "was_cached": state.get("was_cached", False),
             }
         }

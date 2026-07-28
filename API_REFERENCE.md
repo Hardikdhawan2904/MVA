@@ -24,7 +24,7 @@ Four services — two data-intake agents, an orchestrator, and one optional anal
 
 ## Starting all four locally
 
-1. Postgres must be running first — the shared instance lives in `Shared-Postgres/` (`docker compose up -d`), listening on port `5433`.
+1. Postgres must be running first — a native Windows instance (see `Shared-Postgres/README.md`), listening on port `5433`. Normally started automatically by `start-all.ps1`.
 2. Each service uses the shared virtual environment at the repo root (`venv/`) and its own `app.main:app` entry point:
 
 ```bash
@@ -89,11 +89,22 @@ The one call to make if you just want a file profiled end to end. Sends the uplo
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/pipeline/run` | Runs a file through the pipeline and returns all results together under one response. Params: `file` (multipart upload), `sheet_name` (required only for multi-sheet Excel workbooks), `force_reclassify` (bool — re-run Agent 1's LLM classification), `business_question` (optional — also drives Agent 3, see below), `target_column` (optional) |
+| `POST` | `/pipeline/run` | Runs a file through the pipeline and returns all results together under one response. Params: `file` (multipart upload), `sheet_name` (required only for multi-sheet Excel workbooks), `force_reclassify` (bool — re-run Agent 1's LLM classification), `force_revalidate` (bool — bypass the Dataset Registry's cache entirely and re-run Agent 1 + Agent 2 fresh even for byte-identical content already processed before; implies `force_reclassify`), `business_question` (optional — also drives Agent 3, see below), `target_column` (optional) |
 | `POST` | `/pipeline/ask` | Re-ask Agent 3 a different `business_question` against a dataset already processed by `/pipeline/run`, without repeating Agent 1's quality gate or Agent 2's full profiling. See below. |
 | `GET` | `/health` | Liveness check that also reports whether Agent 1 and Agent 2 are currently reachable (Agent 3 isn't pinged here since it's optional/best-effort). |
 
-`/pipeline/run`'s response body is `{"agent1": {...}, "agent2": {...}, "agent3": {...}, "primary_domain_used": "..."}` — `agent3` is always present with a `status` field (`ok` / `skipped` / `failed`), never `null`, whenever the overall response reaches this shape at all.
+`/pipeline/run`'s response body is `{"agent1": {...}, "agent2": {...}, "agent3": {...}, "primary_domain_used": "...", "fingerprint": "...", "copy_id": "...", "was_cached": false}` — `agent3` is always present with a `status` field (`ok` / `skipped` / `failed`), never `null`, whenever the overall response reaches this shape at all. `was_cached: true` means Agent 1 and Agent 2 were skipped entirely and their results were served from the Dataset Registry's cache (see below) — `agent1`/`agent2` are still byte-identical to what a live run would have produced.
+
+### Dataset Registry (Stage 0A)
+
+Not a separate service — deterministic infrastructure inside the Orchestrator, sitting in front of Agent 1/Agent 2. Fingerprints every upload (SHA-256 of the raw bytes, exact-match only) and, on a duplicate, skips Agent 1 and Agent 2 entirely rather than re-running them. Distinct from Agent 1's own `/datasets*` endpoints above (Agent 1's catalog metadata) — these manage the Registry's own Master Dataset / DatasetCopy records.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/datasets/masters` | List Master Datasets — fingerprint, filename, version, row/column counts, reference count. Param: `limit` (default 100) |
+| `GET` | `/datasets/masters/{fingerprint}/copies` | List the upload/copy history for one Master Dataset. Param: `include_deleted` (default false) |
+| `DELETE` | `/datasets/copies/{copy_id}` | Soft-delete one upload's copy record. Never touches the Master Dataset or its physical file. |
+| `DELETE` | `/datasets/masters/{fingerprint}` | Hard-delete a Master Dataset and its physical file. Refuses with `409` if active copies still reference it, unless `?force=true`. |
 
 ### Agent 3 — Analytics Agent (optional third stage)
 

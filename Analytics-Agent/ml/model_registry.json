@@ -2,19 +2,16 @@
   "models": {
     "lightgbm_regressor": {
       "algorithm": "LightGBM",
-      "target": "underwriting_result_actual",
-      "r2": 0.8967,
-      "rmse": 11052.06,
-      "train_rows": 800,
-      "test_rows": 200,
-      "timestamp": "2026-07-16T18:53:40.446726"
+      "target": "revenue",
+      "r2": 0.5453495361627355,
+      "timestamp": "2026-07-28T22:57:59.925881"
     },
     "isolation_forest": {
       "algorithm": "IsolationForest",
       "anomaly_count": 50,
       "total_records": 1000,
       "contamination": 0.05,
-      "timestamp": "2026-07-23T11:03:04.198406"
+      "timestamp": "2026-07-28T22:58:51.387685"
     },
     "xgboost_classifier": {
       "algorithm": "XGBoost",
@@ -42,12 +39,12 @@
     "kmeans_segmentation": {
       "algorithm": "KMeans",
       "n_clusters": 3,
-      "timestamp": "2026-07-23T11:01:21.210219"
+      "timestamp": "2026-07-28T22:57:59.056361"
     },
     "prophet_forecast": {
       "algorithm": "Prophet",
       "periods": 6,
-      "timestamp": "2026-07-23T11:02:50.211850"
+      "timestamp": "2026-07-28T22:58:38.360846"
     }
   }
 }

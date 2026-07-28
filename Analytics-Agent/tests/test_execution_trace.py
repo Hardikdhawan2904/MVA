@@ -318,7 +318,12 @@ def test_forecast_key_drivers_cites_real_lightgbm_r2():
     }
     trace, _ = _build_execution_trace(state, elapsed_seconds=0.2)
     step = next(s for s in trace if s["step"] == "forecast")
-    lgbm = _REGISTRY.get("lightgbm_regressor", {})
+    # Read fresh rather than the module-level _REGISTRY snapshot — same
+    # reasoning as test_ml_gated_happy_path_attaches_model_version above:
+    # other tests' live LightGBM fits during a full-suite run can rewrite
+    # ml/model_registry.json after this module's import-time snapshot was
+    # taken, while _build_execution_trace() itself always reads live.
+    lgbm = _load_model_registry().get("lightgbm_regressor", {})
     if "r2" in lgbm:
         assert "LightGBM" in step["reason"]
         assert f"{lgbm['r2']:.3f}" in step["reason"]

@@ -7,10 +7,14 @@ Internally it's organized as four cooperating services plus a shared database �
 ## Architecture
 
 ```
-                     ┌────────────────────┐
-   Upload ─────────▶ │  Agent Orchestrator │
-                     └─────────┬──────────┘
-                               │
+                     ┌──────────────────────────────────────┐
+   Upload ─────────▶ │  Agent Orchestrator                    │
+                     │  Stage 0A: Dataset Registry (fingerprint│
+                     │  the upload; a duplicate short-circuits │
+                     │  straight to Agent 3, skipping 1 + 2)   │
+                     └─────────┬──────────────────────────────┘
+                               │ (new content, new version, or
+                               │  force_revalidate)
               ┌────────────────┴────────────────┐
               ▼                                  ▼
    ┌─────────────────────┐          ┌─────────────────────────┐
@@ -81,13 +85,18 @@ This starts the shared Postgres instance (a native Windows Postgres install, not
 ## The pipeline, end to end
 
 1. **Upload** a CSV/XLSX file to the orchestrator's `/pipeline/run`.
-2. **Agent 1** runs a configurable quality gate (10 checks — nulls, duplicates, corrupted values, etc.). Files that fail stop here with a `422`.
-3. Passing files get LLM-generated column descriptions and a business-domain classification.
-4. **Agent 2** receives Agent 1's output — including that domain classification, applied automatically with no manual input — and runs its full profiling pipeline: structural stats, semantic type detection, secondary-domain classification, hierarchy inference, business-rule evaluation (both YAML-configured and previously human-approved rules), quality/readiness scoring, and chart generation.
-5. The LLM also proposes up to 5 candidate business rules from what it saw in that run's columns. These sit as `proposed` until a human approves or rejects them via Agent 2's API — approved rules then automatically apply to every future upload in that domain, closing the loop.
-6. If the caller passed a `business_question` **and** it's a CSV, **Agent 3** answers that one question using Agent 2's ML-readiness score — see below. Runs for any of Agent 2's 5 supported domains, not just Insurance. Otherwise this step is skipped.
-7. All agents' results come back together in one response (`agent1`, `agent2`, `agent3`).
-8. **Follow-up questions** don't need to repeat steps 1-5 — `POST /pipeline/ask` (with the earlier response's `agent2.run_id`) re-asks Agent 3 alone, skipping Agent 1's quality gate and Agent 2's full profiling entirely.
+2. **Dataset Registry (Stage 0A)** fingerprints the raw bytes (SHA-256, exact-match only) and checks the Master Dataset Repository. Every upload — hit or miss — gets a lightweight `DatasetCopy` record; deleting a copy later never touches the underlying data. Two outcomes:
+   - **Duplicate content, already validated**: Agent 1 and Agent 2 are skipped entirely — their cached results are served straight through, byte-identical to the original run. Pass `force_revalidate=true` to bypass the cache and force a fresh run anyway (e.g. to correct a bad past classification).
+   - **New content, a new version of a previously-seen filename, or `force_revalidate`**: continue to step 3 as normal.
+3. **Agent 1** runs a configurable quality gate (10 checks — nulls, duplicates, corrupted values, etc.). Files that fail stop here with a `422`.
+4. Passing files get LLM-generated column descriptions and a business-domain classification.
+5. **Agent 2** receives Agent 1's output — including that domain classification, applied automatically with no manual input — and runs its full profiling pipeline: structural stats, semantic type detection, secondary-domain classification, hierarchy inference, business-rule evaluation (both YAML-configured and previously human-approved rules), quality/readiness scoring, and chart generation.
+6. The LLM also proposes up to 5 candidate business rules from what it saw in that run's columns. These sit as `proposed` until a human approves or rejects them via Agent 2's API — approved rules then automatically apply to every future upload in that domain, closing the loop.
+7. If the caller passed a `business_question` **and** it's a CSV, **Agent 3** answers that one question using Agent 2's ML-readiness score — see below. Runs for any of Agent 2's 5 supported domains, not just Insurance, and runs on every request regardless of Stage 0A's cache outcome (its answer depends on the specific question, not just dataset identity). Otherwise this step is skipped.
+8. All agents' results come back together in one response (`agent1`, `agent2`, `agent3`, plus `fingerprint`/`copy_id`/`was_cached` from Stage 0A).
+9. **Follow-up questions** don't need to repeat steps 1-6 — `POST /pipeline/ask` (with the earlier response's `agent2.run_id`) re-asks Agent 3 alone, skipping Agent 1's quality gate and Agent 2's full profiling entirely.
+
+See [`Agent-Orchestrator/README.md`](./Agent-Orchestrator/README.md) for the Dataset Registry's full design (Master Dataset / DatasetCopy schema, reference counting, the `/datasets/*` admin endpoints for listing and deleting masters/copies).
 
 ## Agent 3 — Analytics Agent (optional; runs for any supported domain)
 

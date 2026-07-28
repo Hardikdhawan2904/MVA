@@ -30,6 +30,13 @@ async def run_pipeline(
         description="If this filename already exists in Agent 1's catalog, re-run its LLM column "
                     "descriptions and domain classification instead of reusing the original result.",
     ),
+    force_revalidate: bool = Form(
+        default=False,
+        description="Bypass the Dataset Registry's cache (Stage 0A) entirely and re-run the full "
+                    "Agent 1 + Agent 2 pipeline fresh, even for byte-identical content already "
+                    "processed before. Implies force_reclassify. Useful for correcting a bad past "
+                    "classification/profiling result.",
+    ),
     business_question: str | None = Form(
         default=None,
         description="Optional — when supplied, Agent 2 classifies the dataset's target/feature/drop "
@@ -94,6 +101,7 @@ async def run_pipeline(
         content=content,
         sheet_name=sheet_name,
         force_reclassify=force_reclassify,
+        force_revalidate=force_revalidate,
         business_question=business_question,
         target_column=target_column,
         request_rules=request_rules,

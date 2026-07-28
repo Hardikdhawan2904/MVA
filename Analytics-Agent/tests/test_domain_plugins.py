@@ -16,8 +16,12 @@ import pytest
 import yaml
 
 from app.services.dataset_context.models import ColumnContext, DatasetContext
+from app.services.domain_plugins.customer.plugin import CustomerPlugin
+from app.services.domain_plugins.finance.plugin import FinancePlugin
 from app.services.domain_plugins.generic_plugin import GenericDomainPlugin
+from app.services.domain_plugins.hr.plugin import HRPlugin
 from app.services.domain_plugins.insurance.plugin import InsurancePlugin
+from app.services.domain_plugins.payments.plugin import PaymentsPlugin
 from app.services.domain_plugins.registry import PluginRegistry
 from app.services.planning.models import PlannedAnalysis
 from app.services.question_interpreter.models import QuestionIntent
@@ -67,29 +71,30 @@ def test_registry_finds_insurance_plugin_case_insensitively():
 
 def test_registry_returns_none_for_unmatched_or_missing_domain():
     reg = PluginRegistry()
-    assert reg.find_plugin("Finance") is None
+    assert reg.find_plugin("SomeFutureUnrecognizedDomain") is None
     assert reg.find_plugin(None) is None
     assert reg.find_plugin("") is None
 
 
-# ── Phase 4.5: explicit domain -> plugin resolution contract ────────────────
+# ── Phase 4.5 / starter plugins: explicit domain -> plugin resolution ───────
 #
 # Agent-Orchestrator's gate no longer restricts which of Agent 2's 5
 # canonicalized domains (Finance/Payments/Customer/HR/Insurance) reach
 # Agent 3 — this makes the "what actually runs for each domain" contract
-# explicit and regression-proof. Today only Insurance has a real plugin;
-# every other domain correctly resolves to nothing here, which is what
-# AnalyticsGraphNodes.__init__'s own `PluginRegistry().find_plugin(domain)
-# or GenericDomainPlugin()` line (Phase 4) then turns into the generic
-# engine. When a real Finance/Payments/Customer/HR plugin is added later,
-# exactly one row below flips from None to that plugin — a visible,
-# intentional diff, not a silent behavior change.
+# explicit and regression-proof. Finance/Payments/Customer/HR now resolve
+# to their own thin starter plugins (ThinKPIDomainPlugin — curated KPI
+# catalog + kpi_summary/kpi_variance only); a genuinely unrecognized domain
+# still falls through to nothing here, which is what AnalyticsGraphNodes.
+# __init__'s own `PluginRegistry().find_plugin(domain) or
+# GenericDomainPlugin()` line (Phase 4) then turns into the fully generic
+# engine.
 @pytest.mark.parametrize("domain,expected_plugin_type", [
     ("Insurance", InsurancePlugin),
-    ("Finance", None),
-    ("Payments", None),
-    ("Customer", None),
-    ("HR", None),
+    ("Finance", FinancePlugin),
+    ("Payments", PaymentsPlugin),
+    ("Customer", CustomerPlugin),
+    ("HR", HRPlugin),
+    ("SomeFutureUnrecognizedDomain", None),
 ])
 def test_registry_resolution_for_every_canonicalized_domain(domain, expected_plugin_type):
     plugin = PluginRegistry().find_plugin(domain)
@@ -101,10 +106,10 @@ def test_registry_resolution_for_every_canonicalized_domain(domain, expected_plu
 
 @pytest.mark.parametrize("domain,expected_plugin_type", [
     ("Insurance", InsurancePlugin),
-    ("Finance", GenericDomainPlugin),
-    ("Payments", GenericDomainPlugin),
-    ("Customer", GenericDomainPlugin),
-    ("HR", GenericDomainPlugin),
+    ("Finance", FinancePlugin),
+    ("Payments", PaymentsPlugin),
+    ("Customer", CustomerPlugin),
+    ("HR", HRPlugin),
     (None, GenericDomainPlugin),
     ("SomeFutureUnrecognizedDomain", GenericDomainPlugin),
 ])
