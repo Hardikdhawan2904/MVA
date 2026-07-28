@@ -53,11 +53,9 @@ uvicorn app.main:app --reload --port 8001
 python -m pytest tests/ -v
 ```
 
-Note: this repo's own `docker-compose.yml` is a comment-only pointer to the shared
-server above — running `docker-compose up` directly in this directory does nothing.
-The shared server itself moved off Docker entirely (native Postgres instance,
-`C:\PGData\mva-pipeline`, port 5433 unchanged) — the old Docker-based setup
-(`Shared-Postgres/docker-compose.yml`) is kept only as a documented rollback path.
+Note: this project has no Docker setup of its own — Postgres runs as a native
+Windows instance (`C:\PGData\mva-pipeline`, port 5433) shared across all agents;
+see [`Shared-Postgres/README.md`](../Shared-Postgres/README.md).
 
 ## API Endpoints
 

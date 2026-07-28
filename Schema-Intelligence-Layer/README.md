@@ -245,7 +245,7 @@ Postgres for this whole pipeline (all agents) runs from a shared location, not f
 & "C:\Program Files\PostgreSQL\17\bin\pg_ctl.exe" -D "C:\PGData\mva-pipeline" status   # check
 & "C:\Program Files\PostgreSQL\17\bin\pg_ctl.exe" -D "C:\PGData\mva-pipeline" start    # start if not running
 ```
-Serves every agent's tables under its own schema in the one `mva_pipeline` database. (Port `5433` is used instead of the default `5432` to avoid clashing with any existing local PostgreSQL install.) The Docker-based setup this replaced is still available as a documented rollback path — see `../Shared-Postgres/docker-compose.yml`'s own header comment — but isn't the default anymore. Running `docker compose up` from *this* directory still does nothing either way — the local `docker-compose.yml` here has always been a comment-only pointer to the shared setup.
+Serves every agent's tables under its own schema in the one `mva_pipeline` database. (Port `5433` is used instead of the default `5432` to avoid clashing with any existing local PostgreSQL install.) This project has no Docker setup of its own — see [`Shared-Postgres/README.md`](../Shared-Postgres/README.md).
 
 ### 3. Virtual Environment Setup
 This project shares one virtual environment with the rest of the pipeline — set up once from the **repo root**, not from inside this folder:

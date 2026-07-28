@@ -1,6 +1,6 @@
 # Shared Postgres
 
-The single PostgreSQL server used by every agent in the pipeline. One database (`mva_pipeline`), one container — each agent gets its own schema inside it, so table names can never collide and no agent's migrations can touch another agent's tables.
+The single PostgreSQL server used by every agent in the pipeline. One database (`mva_pipeline`), one server instance — each agent gets its own schema inside it, so table names can never collide and no agent's migrations can touch another agent's tables.
 
 ```
 mva_pipeline (database)
@@ -11,17 +11,24 @@ mva_pipeline (database)
 
 This intentionally replaced an earlier setup where each agent ran its own separate Postgres server — consolidated into one server, then further consolidated from one-database-per-agent into one shared database with per-agent schemas.
 
+Runs as a **native Windows Postgres instance** (data dir `C:\PGData\mva-pipeline`, port `5433` — not the default `5432`, to avoid clashing with any local Postgres install you might already have), not Docker. This project ran the shared server as a Docker container earlier on; that setup has been fully retired and removed in favor of a native instance on the same port, so no other service's config changed.
+
 ## Usage
 
-```bash
-docker compose up -d
+Started automatically as part of the root [`start-all.ps1`](../start-all.ps1) — nothing to do here manually in the normal case. To start/check it directly yourself:
+
+```powershell
+$pgBin = "C:\Program Files\PostgreSQL\17\bin"
+$pgData = "C:\PGData\mva-pipeline"
+& "$pgBin\pg_ctl.exe" -D $pgData status
+& "$pgBin\pg_ctl.exe" -D $pgData start
 ```
 
-Starts a `postgres:16-alpine` container on `localhost:5433` (not the default `5432`, to avoid clashing with any local Postgres install you might already have) with a persistent named volume. On first startup, `init/01-create-agent-schemas.sql` runs automatically and creates all three schemas and the `mva_user` role.
+On a genuinely fresh data directory, `init/01-create-agent-schemas.sql` is what bootstraps all three schemas and the `mva_user` role — replay it once via `psql` against a new instance (it isn't run automatically outside of Docker). It won't re-run against an already-initialized instance, and doesn't need to for the existing one.
 
-That init script only runs once, on a *fresh* volume — it won't re-run against an already-initialized instance. Agent 3's own `init_db()` (`Analytics-Agent/app/services/database.py`) creates its schema/table idempotently at every service startup instead, which is why it doesn't need a dedicated role the way Agent 2 does: `CREATE SCHEMA IF NOT EXISTS` needs no elevated one-time setup, unlike `CREATE USER`.
+Agent 3's own `init_db()` (`Analytics-Agent/app/services/database.py`) creates its schema/table idempotently at every service startup instead, which is why it doesn't need a dedicated role the way Agent 2 does: `CREATE SCHEMA IF NOT EXISTS` needs no elevated one-time setup, unlike `CREATE USER`.
 
-Every other repo in this pipeline (`Schema-Intelligence-Layer`, `MVA-use-case-latest-one`, `Analytics-Agent`) points at this server — none of them define their own Postgres container. Their own `docker-compose.yml` files are comment-only pointers back to this one.
+Every other repo in this pipeline (`Schema-Intelligence-Layer`, `MVA-use-case-latest-one`, `Analytics-Agent`) points at this same server — none of them run their own Postgres.
 
 ## Connection details
 
@@ -34,11 +41,10 @@ Every other repo in this pipeline (`Schema-Intelligence-Layer`, `MVA-use-case-la
 | Agent 2 role | `mva_user` / `mva_password` — schema `agent2` |
 | Agent 3 role | `postgres` / `postgres` — schema `agent3` |
 
-These are local development defaults, not production credentials — this container isn't exposed beyond `localhost`.
+These are local development defaults, not production credentials — this instance isn't exposed beyond `localhost`.
 
-## Stopping / resetting
+## Stopping
 
-```bash
-docker compose down          # stop, keep data
-docker compose down -v       # stop and wipe the volume (full reset)
+```powershell
+& "C:\Program Files\PostgreSQL\17\bin\pg_ctl.exe" -D "C:\PGData\mva-pipeline" stop
 ```

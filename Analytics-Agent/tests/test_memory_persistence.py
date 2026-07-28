@@ -8,7 +8,8 @@ conversation_id so tests can't collide with each other or with real
 conversations.
 
 Skips cleanly if Postgres isn't reachable — this is a real infra
-dependency (Shared-Postgres/docker compose up), not something to fake.
+dependency (the native Shared-Postgres instance, see
+Shared-Postgres/README.md), not something to fake.
 """
 
 import sys
@@ -37,7 +38,8 @@ def _postgres_reachable() -> bool:
 
 
 pytestmark = pytest.mark.skipif(
-    not _postgres_reachable(), reason="Shared Postgres not reachable — run `docker compose up -d` in Shared-Postgres/",
+    not _postgres_reachable(),
+    reason="Shared Postgres not reachable — start the native instance, see Shared-Postgres/README.md",
 )
 
 
