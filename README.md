@@ -69,13 +69,22 @@ Each has its own README going deeper on that piece specifically — this file is
    - **Root** (`cp .env.example .env`, fill in `GROQ_API_KEY`): shared values genuinely identical across Agent 1, Agent 3, and the Orchestrator — the LLM provider key, the `POSTGRES_*` connection details, `LOG_LEVEL`. Each of those three services loads this as a fallback *underneath* its own local `.env` (local always wins on any key both define). Every LLM call in Agent 1/2/3 uses Groq, degrading to a deterministic/template fallback if the call fails or the key is missing — the pipeline never hard-fails because of the LLM.
    - **Per-service** (`cp .env.example .env` inside `Schema-Intelligence-Layer/`, `Agent-Orchestrator/`, and `Analytics-Agent/`): only what's genuinely local to that service — e.g. Agent 1's `GROQ_MODEL` override, Agent 3's `DATASET_PATH`/`HOST`/`PORT`, the Orchestrator's `AGENT1_BASE_URL`/`AGENT2_BASE_URL`/etc.
    - `MVA-use-case-latest-one` (Agent 2) is the exception — it has its own differently-shaped config (`DATABASE_URL`, `LLM_API_KEY`, a separate Postgres role) and keeps its own fully self-contained `.env`, untouched by the root file.
-3. Start everything at once:
+3. **First time only** — bootstrap the database. `start-all.ps1` starts the Postgres *process* (native Windows install, not Docker — data dir `C:\PGData\mva-pipeline`, port 5433) but doesn't create the database, schemas, or roles on a genuinely fresh install:
+   ```powershell
+   & "C:\Program Files\PostgreSQL\17\bin\initdb.exe" -D "C:\PGData\mva-pipeline" -U postgres --pwprompt   # only if the data dir doesn't exist yet
+   & "C:\Program Files\PostgreSQL\17\bin\pg_ctl.exe" -D "C:\PGData\mva-pipeline" start
+   & "C:\Program Files\PostgreSQL\17\bin\createdb.exe" -h localhost -p 5433 -U postgres mva_pipeline
+   & "C:\Program Files\PostgreSQL\17\bin\psql.exe" -h localhost -p 5433 -U postgres -d mva_pipeline -f "Shared-Postgres\init\01-create-agent-schemas.sql"
+   cd MVA-use-case-latest-one; ..\venv\Scripts\python.exe -m alembic upgrade head; cd ..
+   ```
+   Agent 1 and Agent 3 need no manual step — both create their own schema/tables idempotently at every startup. See [`Shared-Postgres/README.md`](./Shared-Postgres/README.md) for exactly what the bootstrap SQL does and why (including a real, previously-undocumented `search_path` gotcha it now closes). Already-initialized instances (including this repo's own dev machine) skip this step entirely — `start-all.ps1` just starts the existing instance.
+4. Start everything at once:
 
 ```powershell
 powershell -File start-all.ps1
 ```
 
-This starts the shared Postgres instance (a native Windows Postgres install, not Docker — data dir `C:\PGData\mva-pipeline`, port 5433, started/checked idempotently via `pg_ctl`) plus all four services (using the one shared venv), each in its own terminal window. Then:
+This starts the shared Postgres instance (idempotently via `pg_ctl` — safe to run whether or not it's already running) plus all four services (using the one shared venv), each in its own terminal window. Then:
 
 - Full pipeline (recommended entry point): `http://127.0.0.1:8002/docs`
 - Agent 1 alone: `http://127.0.0.1:8000/docs`

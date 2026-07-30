@@ -241,6 +241,7 @@ python -m pytest tests/ --cov=app --cov-report=term-missing
 
 ## Running Migrations
 
+On an already-bootstrapped instance (this project's normal dev setup), just:
 ```bash
 # Apply all migrations
 alembic upgrade head
@@ -251,6 +252,14 @@ alembic revision --autogenerate -m "description"
 # Rollback one step
 alembic downgrade -1
 ```
+
+On a genuinely fresh Postgres instance, `alembic upgrade head` fails on
+migration `001` with `permission denied for schema public` unless
+`mva_user`'s `search_path` was set to include `agent2` first — see the
+root README's Quick Start step 3 and
+[`Shared-Postgres/README.md`](../Shared-Postgres/README.md) for the
+one-time bootstrap SQL that handles this. Not needed against this
+project's already-initialized dev instance.
 
 ## Environment Variables
 

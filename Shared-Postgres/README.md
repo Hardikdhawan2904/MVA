@@ -24,7 +24,14 @@ $pgData = "C:\PGData\mva-pipeline"
 & "$pgBin\pg_ctl.exe" -D $pgData start
 ```
 
-On a genuinely fresh data directory, `init/01-create-agent-schemas.sql` is what bootstraps all three schemas and the `mva_user` role — replay it once via `psql` against a new instance (it isn't run automatically outside of Docker). It won't re-run against an already-initialized instance, and doesn't need to for the existing one.
+On a genuinely fresh data directory, `init/01-create-agent-schemas.sql` is what bootstraps all three schemas, the `mva_user` role, **and its `search_path`** — replay it once via `psql` against a new instance (it isn't run automatically outside of Docker):
+
+```powershell
+$env:PGPASSWORD = "postgres"
+& "$pgBin\psql.exe" -h localhost -p 5433 -U postgres -d mva_pipeline -f "..\Shared-Postgres\init\01-create-agent-schemas.sql"
+```
+
+It won't re-run against an already-initialized instance, and doesn't need to for the existing one. **Undocumented gotcha this script closes**: owning a schema does not put it on that role's `search_path` — `mva_user`'s default (`"$user", public`) resolves to nothing, since no schema is literally named `mva_user`. Without `ALTER ROLE mva_user SET search_path TO agent2, public;` (now part of the script), Agent 2's very first Alembic migration (`001`, which relies on the connecting role's search_path rather than explicit schema-qualification — every migration from `002` onward fixed this, see their own inline comments) fails with `permission denied for schema public` on a genuinely fresh instance. Confirmed already applied on this project's live instance; only relevant again when standing up a new one from scratch.
 
 Agent 3's own `init_db()` (`Analytics-Agent/app/services/database.py`) creates its schema/table idempotently at every service startup instead, which is why it doesn't need a dedicated role the way Agent 2 does: `CREATE SCHEMA IF NOT EXISTS` needs no elevated one-time setup, unlike `CREATE USER`.
 
