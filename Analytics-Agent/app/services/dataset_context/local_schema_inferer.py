@@ -3,7 +3,7 @@ fallback column classifier, used only when Agent 2's rich column_profiles
 weren't forwarded (a direct /analyze call, or an un-updated Orchestrator).
 
 Deliberately far simpler than Agent 2's TypeRefiner/SemanticCandidateGenerator
-(MVA-use-case-latest-one/app/services/profiling/) — this is a safety net,
+(Data-Profiling-Agent/app/services/profiling/) — this is a safety net,
 not a second implementation of Agent 2's classification pipeline. Pure
 pandas dtype checks plus a small name-pattern regex set; good enough to
 let the generic planner (Stages 1-3) produce a sensible plan on an

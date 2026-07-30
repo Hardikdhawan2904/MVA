@@ -35,7 +35,7 @@ It won't re-run against an already-initialized instance, and doesn't need to for
 
 Agent 3's own `init_db()` (`Analytics-Agent/app/services/database.py`) creates its schema/table idempotently at every service startup instead, which is why it doesn't need a dedicated role the way Agent 2 does: `CREATE SCHEMA IF NOT EXISTS` needs no elevated one-time setup, unlike `CREATE USER`.
 
-Every other repo in this pipeline (`Schema-Intelligence-Layer`, `MVA-use-case-latest-one`, `Analytics-Agent`) points at this same server — none of them run their own Postgres.
+Every other repo in this pipeline (`Schema-Intelligence-Layer`, `Data-Profiling-Agent`, `Analytics-Agent`) points at this same server — none of them run their own Postgres.
 
 ## Connection details
 

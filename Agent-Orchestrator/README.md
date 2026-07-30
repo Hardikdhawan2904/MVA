@@ -66,7 +66,7 @@ Before forwarding to Agent 2, `extract_domain_and_metadata()` (`app/agents/orche
 - **`mandatory`/`expected_unique` per column** (`_infer_mandatory_and_unique`): identifier-shaped columns (name ends in `id`/`identifier`/`uuid`/`guid`, or Agent 1's LLM description explicitly calls it a unique identifier) are marked `expected_unique`, never `mandatory`; everything else defaults the other way.
 - **Cross-field consistency rules** (`_infer_consistency_rules`): scans numeric column pairs in the uploaded file itself and proposes a `column_comparison` rule (e.g. `actual <= budget`) only when the relationship empirically holds for ≥99% of jointly-valid rows across a real sample of the data — never guessed from column names, capped at 2 auto-proposed rules. This is what lets Agent 2's `consistency` quality dimension (and therefore `ml_readiness`) reflect real data-driven rules without anyone writing YAML.
 
-Both directly feed Agent 2's `schema_metadata`/`request_rules` fields — see [`MVA-use-case-latest-one/README.md`](../MVA-use-case-latest-one/README.md) for how Agent 2 actually uses them in scoring.
+Both directly feed Agent 2's `schema_metadata`/`request_rules` fields — see [`Data-Profiling-Agent/README.md`](../Data-Profiling-Agent/README.md) for how Agent 2 actually uses them in scoring.
 
 **`request_rules` override**: `/pipeline/run` also accepts an optional `request_rules` form field (a JSON string of additional Agent 2 business rules, forwarded verbatim on top of the automatic inference above) — deliberately *not* shown in Swagger UI, since the normal case needs no manual configuration at all, but it's a real, functional parameter for direct API callers who want to assert a relationship the auto-inference can't verify from its own sample. Read directly off the raw request rather than declared as a FastAPI parameter, which is why it doesn't appear in `/docs`.
 
@@ -171,7 +171,7 @@ understanding about how it shapes what gets scored downstream:
    readiness scores** — `agent1`/`agent2` in the response are those
    services' own outputs, forwarded verbatim (see
    `Schema-Intelligence-Layer/README.md` and
-   `MVA-use-case-latest-one/README.md` for the exact formulas). The one
+   `Data-Profiling-Agent/README.md` for the exact formulas). The one
    exception is `_readiness_and_features()` (`nodes/pipeline.py`), which
    extracts Agent 2's `ml_readiness`/`llm_readiness` **plain composite
    `.score`** (never the `dataset_score`/`task_compatibility_score`

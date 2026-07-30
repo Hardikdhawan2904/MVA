@@ -197,7 +197,7 @@ def test_dataset_context_fields_handles_none_input():
 def test_dataset_context_fields_treats_empty_lists_and_dicts_as_absent():
     # A quality-gate "lightweight" Agent 2 run can legitimately return
     # empty lists/dicts for these fields (see finalize_lightweight in
-    # MVA-use-case-latest-one) — those should forward as None, not as
+    # Data-Profiling-Agent) — those should forward as None, not as
     # empty-but-present values that look like real (if vacuous) data.
     agent2_result = {"column_profiles": [], "hierarchy": {}, "charts": [], "feature_recommendation": {}}
     column_profiles, hierarchy, charts, full_feature_recommendation = _dataset_context_fields(agent2_result)

@@ -39,7 +39,7 @@ def get_dataset_registry() -> DatasetRegistry:
     return _dataset_registry
 
 # Agent 2's completeness/uniqueness quality dimensions are rule-driven, not
-# computed from raw data automatically (see MVA-use-case-latest-one's
+# computed from raw data automatically (see Data-Profiling-Agent's
 # app/services/quality/completeness.py / uniqueness.py) -- they only assess
 # columns explicitly flagged mandatory/expected_unique in schema_metadata.
 # This used to hardcode both flags False for every column, meaning no

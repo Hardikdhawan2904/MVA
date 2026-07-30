@@ -50,7 +50,7 @@ Each service runs as its own FastAPI process (so they can be started, stopped, a
 | Folder | Role | Port |
 |---|---|---|
 | [`Schema-Intelligence-Layer`](./Schema-Intelligence-Layer) | Quality gate, LLM column descriptions, business domain classification | 8000 |
-| [`MVA-use-case-latest-one`](./MVA-use-case-latest-one) | Deep structural profiling, quality/readiness scoring, hierarchy inference, chart generation, AI rule suggestions | 8001 |
+| [`Data-Profiling-Agent`](./Data-Profiling-Agent) | Deep structural profiling, quality/readiness scoring, hierarchy inference, chart generation, AI rule suggestions | 8001 |
 | [`Agent-Orchestrator`](./Agent-Orchestrator) | Chains Agent 1 → Agent 2 → (optionally) Agent 3 into one call | 8002 |
 | [`Shared-Postgres`](./Shared-Postgres) | The one Postgres server everything persists to, schema-isolated per service | 5433 |
 | [`Analytics-Agent`](./Analytics-Agent) | Agent 3 — domain-agnostic analytics engine (KPI/variance/root-cause/forecast/anomaly/segmentation/clustering/correlation/...), Insurance as the fully-built reference domain | 8003 |
@@ -68,14 +68,14 @@ Each has its own README going deeper on that piece specifically — this file is
 2. Two layers of `.env` files:
    - **Root** (`cp .env.example .env`, fill in `GROQ_API_KEY`): shared values genuinely identical across Agent 1, Agent 3, and the Orchestrator — the LLM provider key, the `POSTGRES_*` connection details, `LOG_LEVEL`. Each of those three services loads this as a fallback *underneath* its own local `.env` (local always wins on any key both define). Every LLM call in Agent 1/2/3 uses Groq, degrading to a deterministic/template fallback if the call fails or the key is missing — the pipeline never hard-fails because of the LLM.
    - **Per-service** (`cp .env.example .env` inside `Schema-Intelligence-Layer/`, `Agent-Orchestrator/`, and `Analytics-Agent/`): only what's genuinely local to that service — e.g. Agent 1's `GROQ_MODEL` override, Agent 3's `DATASET_PATH`/`HOST`/`PORT`, the Orchestrator's `AGENT1_BASE_URL`/`AGENT2_BASE_URL`/etc.
-   - `MVA-use-case-latest-one` (Agent 2) is the exception — it has its own differently-shaped config (`DATABASE_URL`, `LLM_API_KEY`, a separate Postgres role) and keeps its own fully self-contained `.env`, untouched by the root file.
+   - `Data-Profiling-Agent` (Agent 2) is the exception — it has its own differently-shaped config (`DATABASE_URL`, `LLM_API_KEY`, a separate Postgres role) and keeps its own fully self-contained `.env`, untouched by the root file.
 3. **First time only** — bootstrap the database. `start-all.ps1` starts the Postgres *process* (native Windows install, not Docker — data dir `C:\PGData\mva-pipeline`, port 5433) but doesn't create the database, schemas, or roles on a genuinely fresh install:
    ```powershell
    & "C:\Program Files\PostgreSQL\17\bin\initdb.exe" -D "C:\PGData\mva-pipeline" -U postgres --pwprompt   # only if the data dir doesn't exist yet
    & "C:\Program Files\PostgreSQL\17\bin\pg_ctl.exe" -D "C:\PGData\mva-pipeline" start
    & "C:\Program Files\PostgreSQL\17\bin\createdb.exe" -h localhost -p 5433 -U postgres mva_pipeline
    & "C:\Program Files\PostgreSQL\17\bin\psql.exe" -h localhost -p 5433 -U postgres -d mva_pipeline -f "Shared-Postgres\init\01-create-agent-schemas.sql"
-   cd MVA-use-case-latest-one; ..\venv\Scripts\python.exe -m alembic upgrade head; cd ..
+   cd Data-Profiling-Agent; ..\venv\Scripts\python.exe -m alembic upgrade head; cd ..
    ```
    Agent 1 and Agent 3 need no manual step — both create their own schema/tables idempotently at every startup. See [`Shared-Postgres/README.md`](./Shared-Postgres/README.md) for exactly what the bootstrap SQL does and why (including a real, previously-undocumented `search_path` gotcha it now closes). Already-initialized instances (including this repo's own dev machine) skip this step entirely — `start-all.ps1` just starts the existing instance.
 4. Start everything at once:
@@ -129,8 +129,8 @@ full formulas. The short version, so you know where to look:
 | Score | Computed by | Formula shape | Full detail |
 |---|---|---|---|
 | Quality gate (pass/fail) | Agent 1 | 10 weighted checks, weights sum to 100, `passing_score = 75` | [`Schema-Intelligence-Layer/README.md`](./Schema-Intelligence-Layer/README.md#7-how-scoring-works-the-quality-gate) |
-| Overall data quality score | Agent 2 | `Σ(weight × score) / Σ(weight)` over assessed dimensions only (`not_assessable` dimensions excluded from both sides, never treated as zero) | [`MVA-use-case-latest-one/README.md`](./MVA-use-case-latest-one/README.md#data-quality-dimensions) |
-| AI readiness (analytics / ml / llm / overall) | Agent 2 | Per-assessment point-additions, 0-100; `≥80 ready`, `≥60 partially_ready`, `<60 not_ready`. Each reports `score` / `dataset_score` / `task_compatibility_score` — three different questions, not three names for the same number | [`MVA-use-case-latest-one/README.md`](./MVA-use-case-latest-one/README.md#ai-readiness) |
+| Overall data quality score | Agent 2 | `Σ(weight × score) / Σ(weight)` over assessed dimensions only (`not_assessable` dimensions excluded from both sides, never treated as zero) | [`Data-Profiling-Agent/README.md`](./Data-Profiling-Agent/README.md#data-quality-dimensions) |
+| AI readiness (analytics / ml / llm / overall) | Agent 2 | Per-assessment point-additions, 0-100; `≥80 ready`, `≥60 partially_ready`, `<60 not_ready`. Each reports `score` / `dataset_score` / `task_compatibility_score` — three different questions, not three names for the same number | [`Data-Profiling-Agent/README.md`](./Data-Profiling-Agent/README.md#ai-readiness) |
 | Capability resolution (structural + execution) | Agent 3 | Structural = can this analysis run at all (dataset shape); execution = does Agent 2's `ml_readiness_score` clear Agent 3's 75.0 threshold — never a new score, Agent 2's number reused directly | [`Analytics-Agent/README.md`](./Analytics-Agent/README.md#how-scoring-works) |
 
 **One correction worth internalizing**: Agent 3 never receives Agent 2's

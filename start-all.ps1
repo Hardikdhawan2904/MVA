@@ -31,7 +31,7 @@ Start-Process powershell -ArgumentList "-NoExit", "-Command", `
 
 Write-Host "Starting Agent 2 (Data Profiling Layer) on :8001..." -ForegroundColor Cyan
 Start-Process powershell -ArgumentList "-NoExit", "-Command", `
-    "cd '$root\MVA-use-case-latest-one'; & '$py' -m uvicorn app.main:app --port 8001 --reload"
+    "cd '$root\Data-Profiling-Agent'; & '$py' -m uvicorn app.main:app --port 8001 --reload"
 
 Write-Host "Starting Orchestrator on :8002..." -ForegroundColor Cyan
 Start-Process powershell -ArgumentList "-NoExit", "-Command", `

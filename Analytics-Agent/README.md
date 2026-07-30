@@ -183,7 +183,7 @@ consumes the two numbers Agent 2 already computed
 (`ml_readiness_score`/`llm_readiness_score`, forwarded by the
 Orchestrator as Agent 2's plain composite `.score`, not the
 `dataset_score`/`task_compatibility_score` split — see
-`MVA-use-case-latest-one/README.md`'s AI Readiness section for the full
+`Data-Profiling-Agent/README.md`'s AI Readiness section for the full
 formula those numbers come from). Everything below is what Agent 3 does
 *with* those two numbers, plus its own purely structural/scheduling logic.
 

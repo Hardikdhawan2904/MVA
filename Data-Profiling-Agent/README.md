@@ -36,7 +36,7 @@ This project shares one virtual environment with the rest of the pipeline — se
 python -m venv venv
 .\venv\Scripts\activate
 pip install -r requirements.txt -r requirements-dev.txt
-cd MVA-use-case-latest-one
+cd Data-Profiling-Agent
 
 # Copy env file
 cp .env.example .env

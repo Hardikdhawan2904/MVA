@@ -96,7 +96,7 @@ class DatasetContextBuilder:
         # blind to temporal columns on exactly the datasets most likely to
         # need trend/forecast analysis. refined_data_type ("date"/
         # "datetime", from Agent 2's own type refiner — see
-        # MVA-use-case-latest-one/app/core/enums.py::RefinedDataType) is a
+        # Data-Profiling-Agent/app/core/enums.py::RefinedDataType) is a
         # physical-type signal Agent 2 always sets correctly regardless of
         # role classification, so it's used as a fallback — the same
         # temporal-wins-over-identifier precedence LocalSchemaInferer's own

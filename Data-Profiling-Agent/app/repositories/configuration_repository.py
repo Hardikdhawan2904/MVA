@@ -7,7 +7,7 @@ import yaml
 
 from app.core.exceptions import ConfigurationError
 
-# This service's own root (app/repositories/../../.. -> MVA-use-case-latest-one/).
+# This service's own root (app/repositories/../../.. -> Data-Profiling-Agent/).
 # Used to resolve a relative config_dir against a fixed, known location
 # instead of the process's current working directory.
 _SERVICE_ROOT = Path(__file__).resolve().parent.parent.parent

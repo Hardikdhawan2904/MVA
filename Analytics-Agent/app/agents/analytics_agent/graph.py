@@ -25,7 +25,7 @@ Built fresh per request — never a shared singleton. See
 nodes/pipeline.py's module docstring for why: every request analyzes a
 different uploaded dataset, so SQLTool/MLTool/ExplanationTool all have to be
 constructed against this request's own inputs, mirroring
-MVA-use-case-latest-one's request-scoped graph construction.
+Data-Profiling-Agent's request-scoped graph construction.
 """
 
 import json
@@ -338,7 +338,7 @@ def _build_execution_trace(
     fallback_applied under those exact keys, so this function's read
     pattern below needed zero changes for that case. Multi-analysis
     "report mode" branches out to _build_multi_analysis_trace() instead.
-    Mirrors MVA-use-case-latest-one's data_profiling_agent/graph.py::
+    Mirrors Data-Profiling-Agent's data_profiling_agent/graph.py::
     _state_to_pipeline_result — adapt raw graph state into a structured
     result in one place, not scattered across nodes.
     """

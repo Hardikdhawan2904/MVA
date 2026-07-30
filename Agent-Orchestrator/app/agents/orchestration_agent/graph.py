@@ -117,7 +117,7 @@ async def run_orchestrator_pipeline(
     linear run_pipeline() returned on any Agent 1/2 failure.
 
     request_rules: optional JSON string of additional Agent 2 business
-    rules (see MVA-use-case-latest-one's rule_loader.py for the schema) —
+    rules (see Data-Profiling-Agent's rule_loader.py for the schema) —
     forwarded to Agent 2 verbatim, on top of the mandatory/expected_unique
     column inference extract_domain_and_metadata already does. Distinct
     from that inference: a cross-field consistency rule (e.g. "column A

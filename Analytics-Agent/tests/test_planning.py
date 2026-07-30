@@ -20,7 +20,7 @@ from app.services.question_interpreter.business_question_interpreter import Busi
 from app.services.question_interpreter.models import QuestionIntent
 
 _INSURANCE_CSV = Path(__file__).parent / "fixtures" / "insurance_variance_data_native.csv"
-_HR_CSV = Path(r"C:\Users\dhawa\mva\MVA-use-case-latest-one\tests\fixtures\hr_employee_payroll.csv")
+_HR_CSV = Path(r"C:\Users\dhawa\mva\Data-Profiling-Agent\tests\fixtures\hr_employee_payroll.csv")
 pytestmark_insurance = pytest.mark.skipif(not _INSURANCE_CSV.exists(), reason="Insurance dataset not found")
 pytestmark_hr = pytest.mark.skipif(not _HR_CSV.exists(), reason="HR fixture not found")
 

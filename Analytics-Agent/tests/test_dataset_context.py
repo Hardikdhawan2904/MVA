@@ -3,11 +3,11 @@
 
 LocalSchemaInferer is tested against two real, structurally different
 datasets already in this monorepo — the Insurance reference dataset and
-one of MVA-use-case-latest-one's small HR fixture CSVs — specifically to
+one of Data-Profiling-Agent's small HR fixture CSVs — specifically to
 prove it generalizes beyond Insurance, which is the entire point of Stage
 0 existing. DatasetContextBuilder's rich (Agent-2-derived) path is tested
 against hand-built column_profiles matching Agent 2's actual confirmed
-response shape (verified this session by reading MVA-use-case-latest-one's
+response shape (verified this session by reading Data-Profiling-Agent's
 code directly, not guessed).
 """
 

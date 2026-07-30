@@ -29,7 +29,7 @@ Four services — two data-intake agents, an orchestrator, and one optional anal
 
 ```bash
 cd Schema-Intelligence-Layer   && ..\venv\Scripts\python -m uvicorn app.main:app --port 8000 --reload
-cd MVA-use-case-latest-one     && ..\venv\Scripts\python -m uvicorn app.main:app --port 8001 --reload
+cd Data-Profiling-Agent     && ..\venv\Scripts\python -m uvicorn app.main:app --port 8001 --reload
 cd Agent-Orchestrator          && ..\venv\Scripts\python -m uvicorn app.main:app --port 8002 --reload
 cd Analytics-Agent             && ..\venv\Scripts\python -m uvicorn app.main:app --port 8003 --reload
 ```

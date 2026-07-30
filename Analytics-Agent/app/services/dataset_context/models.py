@@ -18,7 +18,7 @@ from typing import Any, Literal
 ContextSource = Literal["agent2", "local_fallback"]
 
 # Mirrors Agent 2's ColumnRole vocabulary (app/models/enums.py equivalent
-# in MVA-use-case-latest-one) — kept as plain strings here rather than an
+# in Data-Profiling-Agent) — kept as plain strings here rather than an
 # imported enum since Agent 3 must not import Agent 2's code (separate
 # service, separate deployable).
 SEMANTIC_ROLE_METRIC = "metric"

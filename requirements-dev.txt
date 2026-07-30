@@ -1,4 +1,4 @@
-# Test dependencies, only needed for MVA-use-case-latest-one's test suite.
+# Test dependencies, only needed for Data-Profiling-Agent's test suite.
 # Install with: pip install -r requirements.txt -r requirements-dev.txt
 
 pytest

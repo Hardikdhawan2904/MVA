@@ -1,7 +1,7 @@
 # One dependency set for all three Python services (Schema Intelligence Layer,
 # MVA Data Profiling Engine, Agent Orchestrator). Install once, run any of them.
 #
-# pandas is pinned <3.0.0 because MVA-use-case-latest-one's pipeline is built and
+# pandas is pinned <3.0.0 because Data-Profiling-Agent's pipeline is built and
 # tested against the pandas 2.x API — pandas 3.x resolves by default if left
 # unpinned and is NOT compatible with it.
 
