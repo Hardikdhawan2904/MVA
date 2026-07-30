@@ -169,7 +169,7 @@ def test_end_to_end_against_real_resolver():
     import pandas as pd
     from app.services.dataset_context.local_schema_inferer import LocalSchemaInferer
 
-    csv_path = Path(r"C:\Users\dhawa\mva\Schema-Intelligence-Layer\test_data\insurance_variance_data_native.csv")
+    csv_path = Path(__file__).parent / "fixtures" / "insurance_variance_data_native.csv"
     if not csv_path.exists():
         return
     df = pd.read_csv(csv_path)

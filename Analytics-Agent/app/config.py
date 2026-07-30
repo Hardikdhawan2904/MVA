@@ -49,15 +49,23 @@ AGENT_YAML_PATH = BASE_DIR / "app" / "agents" / "analytics_agent" / "agent.yaml"
 
 # Primary dataset — only relevant to scripts/cli.py and train.py now; the
 # FastAPI route (app/routes/analyze.py) always overrides this per-request
-# with the uploaded file's own temp path.
+# with the uploaded file's own temp path. Default points at the shared
+# repo-root test_data/ (see the root README) rather than a hardcoded
+# personal-machine path — .env should still set this explicitly for real
+# use, this is just a fallback that doesn't fail immediately on a fresh
+# clone.
 DATASET_PATH = Path(os.getenv(
     "DATASET_PATH",
-    "/Users/virenkhapra/Downloads/insurance_variance_data_native.csv"
+    str(BASE_DIR.parent / "test_data" / "insurance_variance_data_native.csv"),
 ))
 
 # ── Service host/port ──────────────────────────────────────────────────────────
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8003"))
+
+# Same limit/behavior as Agent 1's own MAX_UPLOAD_SIZE_MB — /analyze reads
+# the whole upload into memory before writing it to a temp file for DuckDB.
+MAX_UPLOAD_SIZE_MB = int(os.getenv("MAX_UPLOAD_SIZE_MB", "100"))
 
 # ── Shared Postgres (conversation memory only — same instance/DB as Agent 1/2,
 # own "agent3" schema) ────────────────────────────────────────────────────────
@@ -70,7 +78,7 @@ POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "postgres")
 # ── YAML Loaders ──────────────────────────────────────────────────────────────
 def _load_yaml(path: Path) -> dict:
     if path.exists():
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
     return {}
 

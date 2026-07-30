@@ -41,6 +41,14 @@ class KPISummaryStrategy:
 
         actual_col = kpi.get("actual_column")
         budget_col = kpi.get("budget_column")
+        if not actual_col or actual_col not in df.columns:
+            # Previously fell through to a near-empty {"kpi": ..., "unit": ...}
+            # evidence dict with no explanation — the single most likely
+            # first complaint on the new Finance/HR/Payments/Customer
+            # starter plugins, whose curated KPIs assume specific column
+            # names a real-world dataset may not use.
+            return {"error": f"'{kpi.get('label', kpi.get('key'))}' expects a column named "
+                              f"'{actual_col}', which this dataset doesn't have."}
         method = _aggregation_method(kpi)
         analytics = AnalyticsTool()
 
@@ -68,6 +76,9 @@ class KPIVarianceStrategy:
         actual_col = kpi.get("actual_column")
         budget_col = kpi.get("budget_column")
         prior_yr_col = kpi.get("prior_year_column")
+        if not actual_col or actual_col not in df.columns:
+            return {"error": f"'{kpi.get('label', kpi.get('key'))}' expects a column named "
+                              f"'{actual_col}', which this dataset doesn't have."}
         method = _aggregation_method(kpi)
         analytics = AnalyticsTool()
 

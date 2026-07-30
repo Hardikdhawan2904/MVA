@@ -88,15 +88,31 @@ class DatasetContextBuilder:
         statistics = profile.get("statistics") or {}
         sample_values = statistics.get("sample_values") or statistics.get("representative_values") or []
 
+        # Agent 2 assigns column *role* by a priority order where a
+        # high-cardinality date column (e.g. one reporting_date per row —
+        # the common case for any daily-grain time series) loses to
+        # "identifier"/grain-key before "temporal_dimension" is ever
+        # considered. Trusting semantic_role alone here would make Agent 3
+        # blind to temporal columns on exactly the datasets most likely to
+        # need trend/forecast analysis. refined_data_type ("date"/
+        # "datetime", from Agent 2's own type refiner — see
+        # MVA-use-case-latest-one/app/core/enums.py::RefinedDataType) is a
+        # physical-type signal Agent 2 always sets correctly regardless of
+        # role classification, so it's used as a fallback — the same
+        # temporal-wins-over-identifier precedence LocalSchemaInferer's own
+        # _is_temporal()/is_identifier already apply on the no-Agent-2 path.
+        physical_type = profile.get("refined_data_type")
+        is_temporal = semantic_role == "temporal_dimension" or physical_type in ("date", "datetime")
+
         return ColumnContext(
             name=profile.get("physical_name", ""),
-            physical_type=profile.get("refined_data_type"),
+            physical_type=physical_type,
             semantic_type=semantic_type,
             semantic_role=semantic_role,
             cardinality_ratio=statistics.get("cardinality_ratio"),
             null_ratio=statistics.get("null_ratio"),
             is_identifier=bool(profile.get("is_grain_key")),
-            is_temporal=(semantic_role == "temporal_dimension"),
+            is_temporal=is_temporal,
             sample_values=list(sample_values)[:5],
             confidence=confidence,
         )

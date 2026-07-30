@@ -226,7 +226,9 @@ async def create_profile_run(
     _job_manager.submit(str(run_id), _run_pipeline)
 
     # Wait for completion (sync-like behavior for v1)
-    completed_job = _job_manager.wait_for_completion(str(run_id), timeout=120.0)
+    completed_job = _job_manager.wait_for_completion(
+        str(run_id), timeout=settings.processing_timeout_seconds,
+    )
 
     if completed_job and completed_job.result:
         result = completed_job.result

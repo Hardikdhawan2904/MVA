@@ -112,6 +112,25 @@ Agent 3 (`Analytics-Agent/`, port 8003) is a FastAPI service like Agent 1/2 — 
 - Originally built as a separate project by a colleague (github.com/VirenKhapra/Analytics-agent-for-project-3) and vendored in here; its own repo still exists independently if contributing changes back upstream.
 - **Asking a follow-up question?** Use `POST /pipeline/ask` instead of `/pipeline/run` — re-uploads the file (Agent 3 needs real rows to query; nothing durably stores them elsewhere) but skips Agent 1 and Agent 2's actual pipelines, reusing Agent 2's already-persisted readiness scores by `run_id`. See [`Agent-Orchestrator/README.md`](./Agent-Orchestrator/README.md#re-asking-agent-3-without-re-running-the-whole-pipeline).
 
+## How scoring works (at a glance)
+
+This file is the map, not a duplicate — each service's own README has the
+full formulas. The short version, so you know where to look:
+
+| Score | Computed by | Formula shape | Full detail |
+|---|---|---|---|
+| Quality gate (pass/fail) | Agent 1 | 10 weighted checks, weights sum to 100, `passing_score = 75` | [`Schema-Intelligence-Layer/README.md`](./Schema-Intelligence-Layer/README.md#7-how-scoring-works-the-quality-gate) |
+| Overall data quality score | Agent 2 | `Σ(weight × score) / Σ(weight)` over assessed dimensions only (`not_assessable` dimensions excluded from both sides, never treated as zero) | [`MVA-use-case-latest-one/README.md`](./MVA-use-case-latest-one/README.md#data-quality-dimensions) |
+| AI readiness (analytics / ml / llm / overall) | Agent 2 | Per-assessment point-additions, 0-100; `≥80 ready`, `≥60 partially_ready`, `<60 not_ready`. Each reports `score` / `dataset_score` / `task_compatibility_score` — three different questions, not three names for the same number | [`MVA-use-case-latest-one/README.md`](./MVA-use-case-latest-one/README.md#ai-readiness) |
+| Capability resolution (structural + execution) | Agent 3 | Structural = can this analysis run at all (dataset shape); execution = does Agent 2's `ml_readiness_score` clear Agent 3's 75.0 threshold — never a new score, Agent 2's number reused directly | [`Analytics-Agent/README.md`](./Analytics-Agent/README.md#how-scoring-works) |
+
+**One correction worth internalizing**: Agent 3 never receives Agent 2's
+`dataset_score`/`task_compatibility_score` split — the Orchestrator's
+`_readiness_and_features()` forwards `ml_readiness`/`llm_readiness`'s
+plain composite `.score` field. If a dataset-only readiness number and a
+question-specific one ever look like they should both be visible to Agent
+3, they aren't — only the blended composite makes the trip.
+
 ## Known constraints worth knowing
 
 - Agent 2 supports 5 primary domains (`Finance`, `Payments`, `Customer`, `HR`, `Insurance`) — each backed by a real config file defining its secondary domains, hierarchy templates, chart templates, and business rules. Agent 1's classification is open-vocabulary (14+ suggested domains), so `Agent-Orchestrator`'s `extract_domain_and_metadata` node canonicalizes known synonyms (e.g. `"Human Resources"` → `"HR"`, case variants) onto Agent 2's exact 5 strings before forwarding — a domain that's genuinely unsupported (or a synonym not yet in the map) still stops the pipeline with a clear error rather than guessing.

@@ -23,6 +23,7 @@ from typing import Any, Literal
 import pandas as pd
 from fastapi import HTTPException
 
+from app.config import settings
 from app.datastore.registry import store_dataframe
 from app.agents.classification_agent import run_classification_agent
 from app.agents.schema_intelligence_agent.state import SchemaIntelligenceState
@@ -68,6 +69,22 @@ def validate_and_load(state: SchemaIntelligenceState) -> dict[str, Any]:
     if len(df.columns) == 0:
         raise HTTPException(
             status_code=422, detail=f"File '{filename}' does not contain valid tabular data (no columns detected)."
+        )
+    # MAX_UPLOAD_SIZE_MB alone doesn't bound row/column count — a highly
+    # compressible file well under the byte cap can still expand into
+    # millions of rows once parsed. Same limit names/values as Agent 2's
+    # MAX_DATASET_ROWS/MAX_DATASET_COLUMNS.
+    if len(df) > settings.MAX_DATASET_ROWS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Dataset '{filename}' has {len(df)} rows, exceeding the maximum of "
+                   f"{settings.MAX_DATASET_ROWS}.",
+        )
+    if len(df.columns) > settings.MAX_DATASET_COLUMNS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Dataset '{filename}' has {len(df.columns)} columns, exceeding the maximum of "
+                   f"{settings.MAX_DATASET_COLUMNS}.",
         )
 
     return {"file_extension": file_extension, "df": df}

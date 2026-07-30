@@ -20,7 +20,7 @@ from app.agents.analytics_agent.graph import run_analytics_graph
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger("TestHarness")
 
-_DATASET = Path(r"C:\Users\dhawa\mva\Schema-Intelligence-Layer\test_data\insurance_variance_data_native.csv")
+_DATASET = Path(__file__).parent / "fixtures" / "insurance_variance_data_native.csv"
 
 pytestmark = pytest.mark.skipif(
     not _DATASET.exists(), reason=f"Insurance test dataset not found at {_DATASET}"
@@ -114,6 +114,16 @@ TEST_CASES = [
         # alone is still a genuine signal (the gate was mentioned at all)
         # without pinning down its phrasing, same rationale as case 8's
         # accept-either pattern below.
+        #
+        # Known flaky (confirmed live, 2/3 runs passed with zero code
+        # changes between them): this query can resolve to either a single
+        # "forecast" analysis or an unrestricted multi-analysis "report
+        # mode" response depending on live intent interpretation, and
+        # whether the Groq narration call itself succeeds or hits a
+        # rate-limit and falls back to the raw template formatter changes
+        # whether "readiness" ends up phrased in a way this substring
+        # check catches. This is inherent to asserting on live-LLM prose
+        # rather than deterministic evidence fields — not a code bug.
         "checks": ["underwriting result", "readiness", "trend"]
     },
     {

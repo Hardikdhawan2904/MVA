@@ -25,7 +25,7 @@ import pytest
 from app.agents.analytics_agent.graph import build_analytics_graph
 from app.agents.analytics_agent.nodes.pipeline import AnalyticsGraphNodes
 
-_DATASET = Path(r"C:\Users\dhawa\mva\Schema-Intelligence-Layer\test_data\insurance_variance_data_native.csv")
+_DATASET = Path(__file__).parent / "fixtures" / "insurance_variance_data_native.csv"
 
 pytestmark = pytest.mark.skipif(
     not _DATASET.exists(), reason=f"Insurance test dataset not found at {_DATASET}"

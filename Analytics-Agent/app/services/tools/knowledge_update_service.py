@@ -124,6 +124,7 @@ class KnowledgeUpdateTool:
                 ],
                 temperature=0.0,
                 max_tokens=512,
+                timeout=30.0,
             )
             raw = response.choices[0].message.content.strip()
             # Strip markdown code fences if present
@@ -167,7 +168,7 @@ class KnowledgeUpdateTool:
         """
         Validate that a candidate KPI definition is structurally sound using Pydantic.
         """
-        from tools.schemas import KPIDefinition
+        from app.services.schemas import KPIDefinition
         try:
             ALLOWED_CATEGORIES = {
                 "premium", "claims", "ratio", "policy",

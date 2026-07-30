@@ -149,7 +149,7 @@ Reads the dataset from `DATASET_PATH` (see Environment Variables) instead of an 
 | GROQ_API_KEY *(root `.env`)* | *(empty)* | Groq API key — used for narration. Falls back to a deterministic template formatter if unset/unreachable/rate-limited. |
 | HOST | 0.0.0.0 | Bind host. |
 | PORT | 8003 | Bind port. |
-| DATASET_PATH | *(colleague's original Mac path)* | **Local testing only** — used by `scripts/cli.py` and `train.py`. Has no effect on `POST /analyze`, which always uses the uploaded file. |
+| DATASET_PATH | `../test_data/insurance_variance_data_native.csv` | **Local testing only** — used by `scripts/cli.py` and `train.py`. Has no effect on `POST /analyze`, which always uses the uploaded file. |
 | POSTGRES_HOST *(root `.env`)* | localhost | Shared Postgres host — same instance as Agent 1/2. |
 | POSTGRES_PORT *(root `.env`)* | 5433 | Shared Postgres port. |
 | POSTGRES_DB *(root `.env`)* | mva_pipeline | Shared database name. |
@@ -176,14 +176,119 @@ Trains Prophet-free LightGBM, IsolationForest, XGBoost, and K-Means against `DAT
 
 19 files, 304 tests. Covers every stage of the pipeline above: capability resolution, KPI discovery, question interpretation, planning, scheduling, the model registry/selector, all 16 analyzers (+ the 2 curated-KPI analyzers), the domain plugin system (including a byte-for-byte check that the Insurance plugin's copied config files match the originals), the evidence builder, LangGraph routing, the execution trace/summary builder, Postgres-backed conversation memory (against the real shared instance), and a 12-case end-to-end harness exercising every curated-KPI query shape (real Groq calls — slower and occasionally rate-limit-prone, but confirms the whole path works, not just its parts).
 
+## How Scoring Works
+
+Agent 3 **never computes ML or LLM readiness itself** — it only ever
+consumes the two numbers Agent 2 already computed
+(`ml_readiness_score`/`llm_readiness_score`, forwarded by the
+Orchestrator as Agent 2's plain composite `.score`, not the
+`dataset_score`/`task_compatibility_score` split — see
+`MVA-use-case-latest-one/README.md`'s AI Readiness section for the full
+formula those numbers come from). Everything below is what Agent 3 does
+*with* those two numbers, plus its own purely structural/scheduling logic.
+
+**Stage 1 — Capability resolution (structural vs. execution).** For each
+of 8 capabilities (forecasting, clustering, classification, regression,
+segmentation, correlation, association_rules, time_series),
+`AnalyticsCapabilityResolver` reports two independent verdicts:
+- `structural.supported` — can this analysis mechanically run at all,
+  given the dataset's shape (right column types present, enough rows)?
+  Pure `DatasetContext` question, zero relation to any readiness score.
+- `execution.supported` — *if* structurally possible, does
+  `ml_readiness_score` clear `ML_READINESS_THRESHOLD` (75.0,
+  `app/config.py`, read from `ml_config.yml`'s `readiness_threshold`)? If
+  so, `execution.confidence = ml_readiness_score / 100.0` — Agent 2's own
+  number re-expressed as a fraction, never recomputed.
+
+`AnalyticsPlanner` (Stage 4) only ever reads `structural.supported` — an
+analysis gets *planned* whenever it's mechanically possible, full stop.
+`ModelSelector` (Stage 6) reads `execution.supported` (further gated by
+the Scheduler's ML budget below) to decide real model vs. deterministic
+strategy for an already-planned analysis. `llm_readiness_score` never
+gates an analysis — only narration (Stage 9): below
+`LLM_READINESS_THRESHOLD` (also 75.0), `ExplanationTool` skips the Groq
+call entirely and goes straight to the deterministic template formatter.
+
+**Stage 5 — Scheduling budget** (`config/scheduling_budget.yml`):
+
+| Budget | Value | What it bounds |
+|---|---|---|
+| `max_parallel_analyses` | 8 | Total analyses executed per request, after prioritizing requested → KPI-grounded → by `PlannedAnalysis.priority`. Requested (question-matched) analyses are never trimmed by this cap, even if they alone exceed it. |
+| `max_ml_analyses` | 3 | Of the scheduled analyses, only this many (same priority order) may attempt a real ML-backed strategy — `ml_execution_allowed` can only ever downgrade toward a cheaper/deterministic strategy, never upgrade past what Stage 1 already determined viable. |
+| `max_expensive_operations` | 2 | Of the ML-allowed set, only this many may select an algorithm tagged `cost_tier: "expensive"` in `config/model_registry.yml` (~35 registered algorithms, cheap/moderate/expensive) — the rest select the cheapest viable algorithm for their analysis type, enforced by `ModelSelector`, not the Scheduler itself. |
+
+This is the explicit, load-bearing safeguard against pathological blowup
+on wide datasets — without it, a 50+ column upload could otherwise
+trigger dozens of model fits in one request.
+
+**Why this design keeps Agent 2 as the single source of truth for
+readiness**: `AnalyticsCapabilityResolver`'s function signature never
+receives the raw DataFrame or Agent 2's evidence/strengths/blocking_issues
+— only the two already-computed scores plus `DatasetContext` — so there
+is no code path in Agent 3 that can silently reimplement or drift from
+Agent 2's scoring logic.
+
 ## Known Limitations
 
-- Real ML models (Prophet/LightGBM/IsolationForest/XGBoost/K-Means) are trained once against `DATASET_PATH` (Insurance) and persisted — a non-Insurance upload's ML-eligible analyses always fit fresh per request rather than predicting against a cached model. Deterministic fallbacks (the large majority of what a generic dataset actually gets, since ML requires a high `ml_readiness_score`) are unaffected.
-- ML feature-column lists (`config/ml_config.yml` — which ratio columns feed IsolationForest/KMeans, which columns LightGBM treats as categorical) are hand-curated Insurance-domain expertise, not derived from Agent 2's `feature_recommendation` — used only as a diagnostic cross-check, never to swap which columns a model actually uses. This only affects Insurance's own ML paths; a non-Insurance dataset's generic analyzers (Stage 7) derive their feature columns from `DatasetContext` directly.
-- Only CSV uploads, no Excel.
+Fixed during the handover pass: `knowledge_update_service.py`'s broken
+`from tools.schemas import KPIDefinition` import (silently swallowed by a
+broad `except Exception`, making auto-KPI-generation dead for every
+domain) now correctly imports from `app.services.schemas`; upload size
+limits and a `business_question` length cap were added to `POST
+/analyze` (previously only Agent 1 enforced any upload limit); explicit
+30s timeouts were added to the two direct Groq calls in
+`explanation_tool.py`/`knowledge_update_service.py`; `KPISummaryStrategy`/
+`KPIVarianceStrategy` now return an explicit `{"error": "..."}` naming
+the missing column instead of silently returning near-empty evidence when
+a curated KPI's expected columns aren't present in the uploaded dataset
+(the single most likely first complaint on the new starter plugins);
+`graph.py`'s error path no longer leaks raw exception text into the
+caller's response (logged server-side instead); every `open()` across the
+domain-plugin/rule-engine JSON/YAML loaders now sets `encoding="utf-8"`
+explicitly (Windows otherwise silently uses the system code page, a
+latent bug for the first non-ASCII KPI label anyone adds).
+
+Still open — real findings that need a conscious decision rather than a
+same-session patch:
+
+- **Real ML models (Prophet/LightGBM/IsolationForest/XGBoost/K-Means) are
+  trained once against `DATASET_PATH` (Insurance) and persisted** — a
+  non-Insurance upload's ML-eligible analyses always fit fresh per
+  request rather than predicting against a cached model. Deterministic
+  fallbacks (the large majority of what a generic dataset actually gets,
+  since ML requires clearing the 75.0 readiness threshold) are
+  unaffected. Per-dataset model caching keyed by content fingerprint is
+  the natural fix, not yet built.
+- **ML feature-column lists** (`config/ml_config.yml` — which ratio
+  columns feed IsolationForest/KMeans, which columns LightGBM treats as
+  categorical) are hand-curated Insurance-domain expertise, not derived
+  from Agent 2's `feature_recommendation` — used only as a diagnostic
+  cross-check, never to swap which columns a model actually uses. Only
+  affects Insurance's own ML paths; a non-Insurance dataset's generic
+  analyzers (Stage 7) derive their feature columns from `DatasetContext`
+  directly.
+- Only CSV uploads, no Excel (`SQLTool` reads via DuckDB's
+  `read_csv_auto`, a genuine capability limit — see
+  `Agent-Orchestrator/README.md`'s `Agent3Capabilities` gate).
 - No authentication in v1.
-- Multi-turn conversation memory only works when a caller explicitly passes `conversation_id` back on each request — `Agent-Orchestrator` doesn't do this today (it's intentionally stateless), so pipeline-driven questions each start a fresh conversation. Only a direct `POST /analyze` caller (or `scripts/cli.py --interactive`) gets continuity.
-- Finance/HR/Payments/Customer now have thin starter domain plugins (curated KPI catalog + `kpi_summary`/`kpi_variance` only, see the Domain Enhancement Layer table above) — none have driver columns or ML-feature-column overrides yet, so labeled-mode root cause and Insurance-style ML corroboration still only apply to Insurance. A domain with no registered plugin at all still gets `GenericDomainPlugin`'s fully functional generic report.
+- Multi-turn conversation memory only works when a caller explicitly
+  passes `conversation_id` back on each request — `Agent-Orchestrator`
+  doesn't do this today (it's intentionally stateless), so
+  pipeline-driven questions each start a fresh conversation. Only a
+  direct `POST /analyze` caller (or `scripts/cli.py --interactive`) gets
+  continuity.
+- Finance/HR/Payments/Customer now have thin starter domain plugins
+  (curated KPI catalog + `kpi_summary`/`kpi_variance` only, see the
+  Domain Enhancement Layer table above) — none have driver columns or
+  ML-feature-column overrides yet, so labeled-mode root cause and
+  Insurance-style ML corroboration still only apply to Insurance. A
+  domain with no registered plugin at all still gets
+  `GenericDomainPlugin`'s fully functional generic report.
+- Blocking synchronous I/O (Groq calls, DuckDB queries) runs directly on
+  this service's async event loop — same cross-service issue documented
+  in `Schema-Intelligence-Layer/README.md`'s Known Limitations; not fixed
+  here for the same reason (deserves one general fix across all 4
+  services, not four independent partial patches).
 
 ## Decisions Log
 

@@ -7,12 +7,27 @@ import yaml
 
 from app.core.exceptions import ConfigurationError
 
+# This service's own root (app/repositories/../../.. -> MVA-use-case-latest-one/).
+# Used to resolve a relative config_dir against a fixed, known location
+# instead of the process's current working directory.
+_SERVICE_ROOT = Path(__file__).resolve().parent.parent.parent
+
 
 class ConfigurationRepository:
     """Loads versioned YAML configuration files from disk."""
 
     def __init__(self, config_dir: str | Path = "config"):
-        self._config_dir = Path(config_dir)
+        config_dir = Path(config_dir)
+        # Every real call site passes the literal string "config" — that
+        # only ever worked because start-all.ps1 always `cd`s into this
+        # service's directory before launching uvicorn. Any other launch
+        # method (Docker, systemd, CI) that doesn't set the working
+        # directory to this exact folder would fail on the first request
+        # with CONFIG_FILE_NOT_FOUND. Resolve relative paths against this
+        # package's own location instead, so it works regardless of
+        # launch directory. Absolute paths (as several tests already pass)
+        # are used as-is, unaffected.
+        self._config_dir = config_dir if config_dir.is_absolute() else _SERVICE_ROOT / config_dir
         self._cache: dict[str, Any] = {}
 
     def _load_yaml(self, relative_path: str) -> dict[str, Any]:

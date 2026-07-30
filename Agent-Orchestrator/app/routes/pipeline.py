@@ -4,7 +4,7 @@ and Agent 2 (MVA Data Profiling Engine) via a LangGraph StateGraph (app/agents/o
 Each future agent added to the pipeline becomes another node in that same graph.
 """
 
-from fastapi import APIRouter, Request, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 import httpx
 
@@ -12,6 +12,7 @@ from app.agents.orchestration_agent.graph import run_orchestrator_pipeline
 from app.agents.orchestration_agent.nodes.pipeline import (
     _agent3_skip_reason, _analyze_via_agent3, _dataset_context_fields, _get_agent2_result, _readiness_and_features,
 )
+from app.config import settings
 
 router = APIRouter(prefix="/pipeline", tags=["Pipeline"])
 
@@ -39,6 +40,7 @@ async def run_pipeline(
     ),
     business_question: str | None = Form(
         default=None,
+        max_length=2000,
         description="Optional — when supplied, Agent 2 classifies the dataset's target/feature/drop "
                     "columns and an ML-vs-LLM approach for this question (feature_recommendation).",
     ),
@@ -88,6 +90,13 @@ async def run_pipeline(
     Swagger UI user for something that's already automatic.
     """
     content = await file.read()
+    max_bytes = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
+    if len(content) > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File exceeds the maximum upload size of {settings.MAX_UPLOAD_SIZE_MB}MB "
+                   f"(got {len(content) / (1024 * 1024):.1f}MB).",
+        )
     filename = file.filename or "upload"
     content_type = file.content_type or "application/octet-stream"
 
@@ -114,7 +123,7 @@ async def ask_agent3(
         ..., description="The same dataset re-uploaded — Agent 3 needs real rows to query, and there's "
                           "nowhere durable this service can fetch them back from on its own."
     ),
-    business_question: str = Form(..., description="The new business question to answer."),
+    business_question: str = Form(..., max_length=2000, description="The new business question to answer."),
     run_id: str = Form(
         ..., description="Agent 2's run_id from an earlier POST /pipeline/run response "
                           "(the agent2.run_id field)."
@@ -138,6 +147,13 @@ async def ask_agent3(
     `502` if Agent 2 is unreachable.
     """
     content = await file.read()
+    max_bytes = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
+    if len(content) > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File exceeds the maximum upload size of {settings.MAX_UPLOAD_SIZE_MB}MB "
+                   f"(got {len(content) / (1024 * 1024):.1f}MB).",
+        )
     filename = file.filename or "upload"
     content_type = file.content_type or "application/octet-stream"
 

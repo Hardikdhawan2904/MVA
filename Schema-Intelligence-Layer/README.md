@@ -29,8 +29,7 @@ Schema_Intelligence_layer/
 │       └── registry.py            # RAM-based DataFrame cache registry
 ├── config/
 │   └── quality_threshold.json     # Configuration file for quality checks, limits, and weights
-├── test_data/                     # Directory containing sample Excel and CSV datasets
-├── test_local.py                  # Standalone CLI test pipeline script
+├── test_local.py                  # Standalone CLI test pipeline script (reads ../test_data/, shared across all 4 services)
 └── README.md                      # Project documentation
 
 # Dependencies (requirements.txt / requirements-dev.txt) live at the repo root,
@@ -262,9 +261,10 @@ See the [root README](../README.md) for why — one dependency set, no version d
 Run the offline testing tool directly from the terminal. It prints validation checklists and logs without launching the server:
 ```powershell
 # Test a single file
-..\venv\Scripts\python.exe test_local.py test_data/neutral_payments_variance_trxnid_1000.xlsx
+..\venv\Scripts\python.exe test_local.py ..\test_data\neutral_payments_variance_trxnid_1000.xlsx
 
-# Test all datasets inside the test_data directory
+# Test all datasets inside the repo-root test_data/ directory (shared
+# across all 4 services, not owned by this one — see the root README)
 ..\venv\Scripts\python.exe test_local.py
 ```
 
@@ -366,4 +366,74 @@ If the quality score meets or exceeds the required threshold, the metadata is re
   ]
 }
 ```
+
+## 7. How Scoring Works: The Quality Gate
+
+`DataQualityValidator` (`app/services/quality_validator.py`) runs 10
+deterministic checks, each contributing points toward a `dataset_score`
+out of 100. Weights and thresholds live entirely in
+[`config/quality_threshold.json`](./config/quality_threshold.json) — no
+code change needed to retune them:
+
+| Check | Weight | What it measures |
+|---|---|---|
+| `column_count` | 15 | Binary: full weight if `column_count >= min_columns` (1), else 0 |
+| `missing_values` | 20 | `weight × (1 − max(overall_missing_pct, worst_single_column_missing_pct) / 100)` — scores off whichever is worse, so one 95%-null column can't hide behind an otherwise-clean dataset |
+| `duplicate_columns` | 5 | `weight × (1 − duplicate_column_count / total_columns)` |
+| `duplicate_rows` | 5 | `weight × (1 − duplicate_row_count / total_rows)` |
+| `empty_columns` | 10 | `weight × (1 − fully_empty_column_count / total_columns)` |
+| `datatype_consistency` | 15 | Per column, the fraction of non-null values matching that column's dominant type (bool/numeric/datetime/string), averaged across columns |
+| `corrupted_values` | 10 | `weight × (1 − corrupted_placeholder_count / total_valid_cells)` — placeholders are `?`, `n/a`, `na`, `null`, `none`, `undefined`, `NaN` |
+| `null_heavy_rows` | 10 | `weight × (1 − null_heavy_row_count / total_rows)` — a row is null-heavy if >50% of its cells are null |
+| `cell_length_outliers` | 5 | For non-free-text string columns, `weight × (1 − outlier_count / total_strings)` — outliers are cells whose length is >3 standard deviations from the column mean |
+| `mixed_formats` | 5 | For non-free-text string columns, the majority-casing ratio (upper/lower/title/mixed), averaged across columns |
+
+The 10 weights sum to exactly 100 — `dataset_score` is a plain additive
+sum of each check's achieved points, no further normalization needed.
+Free-text columns (average ≥4 words or ≥40 characters —
+`limits.free_text_min_avg_words`/`free_text_min_avg_length`) are exempt
+from the two format-consistency checks (`cell_length_outliers`,
+`mixed_formats`), since inconsistent casing/length is expected and
+meaningless in prose fields.
+
+**`passing_score = 75`** (also in `quality_threshold.json`) — a dataset
+scoring below this fails the gate with `422` before any LLM call runs, so
+a bad upload never reaches Agent 2 or costs an LLM token.
+
+## 8. Known Limitations
+
+Fixed this handover pass (see git history for details): the dataset-ID
+race condition under concurrent uploads (now a Postgres `SEQUENCE`), no
+connection pooling (now `ThreadedConnectionPool`, mirroring Agent 2's
+`pool_size=5`/`max_overflow=10`), the CORS wildcard+credentials
+misconfiguration, and no row/column upload limits (`MAX_DATASET_ROWS`/
+`MAX_DATASET_COLUMNS`, mirroring Agent 2's own settings).
+
+Still open, flagged for whoever picks this up next:
+
+- **Unbounded in-memory DataFrame cache** (`app/datastore/registry.py`'s
+  `_dataframes` dict) — every uploaded dataset is written in and never
+  evicted. No TTL, no LRU, no size cap. A long-running process will grow
+  memory without bound as datasets accumulate. Deciding an eviction
+  policy changes what `GET /datasets/{id}/dataframe` can promise (how
+  long a dataset stays fetchable), so this is a product decision, not
+  something to silently pick a policy for.
+- **Blocking synchronous work runs directly on the async event loop** —
+  `upload_dataset` is `async def` but calls the pipeline (blocking
+  pandas parsing, blocking Postgres calls, blocking Groq HTTP calls)
+  synchronously, with no `run_in_threadpool`/`asyncio.to_thread` offload.
+  Under concurrent load, one slow upload blocks every other request
+  (including `/health`) on this single-worker process. Real throughput
+  ceiling, not a correctness bug at current expected scale (small
+  team/dev tool usage) — the fix pattern is straightforward
+  (`run_in_threadpool`) but touches the request-handling path and
+  deserves its own testing pass.
+- **Default DB credentials** (`postgres`/`postgres`) are the fallback
+  when env vars are unset — fine for local dev, change before any real
+  deployment.
+- **Test coverage**: `tests/test_llm_service.py` and the new
+  `tests/test_database.py` cover the LLM-response-parsing helpers and the
+  dataset-ID race fix; `app/routes/upload.py` (the full HTTP surface) and
+  `app/services/quality_validator.py` still have no automated tests
+  beyond the manual `test_local.py` script.
 

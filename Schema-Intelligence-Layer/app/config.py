@@ -35,6 +35,27 @@ class Settings(BaseSettings):
     # Upload configuration
     MAX_UPLOAD_SIZE_MB: int = 100  # Maximum upload size in MB
     SAMPLE_ROWS: int = 5  # Number of sample rows to extract
+    # Same limits/names as Agent 2's MAX_DATASET_ROWS/MAX_DATASET_COLUMNS —
+    # MAX_UPLOAD_SIZE_MB alone doesn't bound row/column count: a highly
+    # compressible CSV well under the byte cap can still expand into
+    # millions of pandas rows, all of which get serialized into the
+    # response's dataframe_records field.
+    MAX_DATASET_ROWS: int = 200_000
+    MAX_DATASET_COLUMNS: int = 200
+
+    # CORS — comma-separated origin list. Previously hardcoded to "*" with
+    # allow_credentials=True, which Starlette's CORSMiddleware handles by
+    # echoing the request's Origin header back verbatim (required, since
+    # "*" and credentials can't legally combine per the CORS spec) —
+    # effectively permitting credentialed cross-origin requests from any
+    # site. Defaults to the same local dev frontend origins
+    # Agent-Orchestrator's own CORS config already allows; widen via env
+    # for a real deployed frontend.
+    CORS_ALLOWED_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173"
+
+    @property
+    def cors_allowed_origins_list(self) -> list[str]:
+        return [origin.strip() for origin in self.CORS_ALLOWED_ORIGINS.split(",") if origin.strip()]
 
     LOG_LEVEL: str = "INFO"
 

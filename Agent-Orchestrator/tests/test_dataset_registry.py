@@ -86,8 +86,7 @@ def test_register_genuinely_new_dataset(tmp_path):
     with patch("app.services.dataset_registry.dataset_registry.duplicate_detector.find_duplicate", return_value=None), \
          patch("app.services.dataset_registry.dataset_registry.version_manager.find_prior_version", return_value=None), \
          patch("app.services.dataset_registry.dataset_registry.metadata_cache.insert_master_dataset") as mock_insert, \
-         patch("app.services.dataset_registry.dataset_registry.metadata_cache.insert_copy") as mock_insert_copy, \
-         patch("app.services.dataset_registry.dataset_registry.reference_counter.increment") as mock_incr:
+         patch("app.services.dataset_registry.dataset_registry.metadata_cache.insert_copy_and_increment_reference") as mock_insert_copy:
         result = registry.register(filename="new.csv", file_extension=".csv", content=b"x,y\n1,2\n")
 
     assert result.was_duplicate is False
@@ -96,8 +95,11 @@ def test_register_genuinely_new_dataset(tmp_path):
     assert result.master.previous_fingerprint is None
     assert result.cached_result is None
     mock_insert.assert_called_once()
+    # insert_copy_and_increment_reference does both the copy insert AND the
+    # reference_count increment atomically, in one call — this is the
+    # actual fix under test, so assert it's used instead of two separate
+    # non-atomic calls.
     mock_insert_copy.assert_called_once()
-    mock_incr.assert_called_once_with(result.master.fingerprint)
 
 
 def test_register_duplicate_content_reuses_cached_result(tmp_path):
@@ -106,8 +108,7 @@ def test_register_duplicate_content_reuses_cached_result(tmp_path):
     cached = CachedPipelineResult(primary_domain="Finance", agent1_body={"a": 1}, agent2_full_result={"b": 2})
 
     with patch("app.services.dataset_registry.dataset_registry.duplicate_detector.find_duplicate", return_value=existing), \
-         patch("app.services.dataset_registry.dataset_registry.metadata_cache.insert_copy") as mock_insert_copy, \
-         patch("app.services.dataset_registry.dataset_registry.reference_counter.increment") as mock_incr, \
+         patch("app.services.dataset_registry.dataset_registry.metadata_cache.insert_copy_and_increment_reference") as mock_insert_copy, \
          patch("app.services.dataset_registry.dataset_registry.metadata_cache.touch_last_referenced") as mock_touch, \
          patch("app.services.dataset_registry.dataset_registry.metadata_cache.get_cached_result", return_value=cached):
         result = registry.register(filename="same.csv", file_extension=".csv", content=b"same,bytes\n")
@@ -116,7 +117,6 @@ def test_register_duplicate_content_reuses_cached_result(tmp_path):
     assert result.cached_result is cached
     assert result.copy.version == 3
     mock_insert_copy.assert_called_once()
-    mock_incr.assert_called_once()
     mock_touch.assert_called_once()
 
 
@@ -130,8 +130,7 @@ def test_register_duplicate_without_cached_result_yet(tmp_path):
     existing = _master(fingerprint=compute_fingerprint(b"partial\n"))
 
     with patch("app.services.dataset_registry.dataset_registry.duplicate_detector.find_duplicate", return_value=existing), \
-         patch("app.services.dataset_registry.dataset_registry.metadata_cache.insert_copy"), \
-         patch("app.services.dataset_registry.dataset_registry.reference_counter.increment"), \
+         patch("app.services.dataset_registry.dataset_registry.metadata_cache.insert_copy_and_increment_reference"), \
          patch("app.services.dataset_registry.dataset_registry.metadata_cache.touch_last_referenced"), \
          patch("app.services.dataset_registry.dataset_registry.metadata_cache.get_cached_result", return_value=None):
         result = registry.register(filename="partial.csv", file_extension=".csv", content=b"partial\n")
@@ -147,8 +146,7 @@ def test_register_new_version_of_known_filename(tmp_path):
     with patch("app.services.dataset_registry.dataset_registry.duplicate_detector.find_duplicate", return_value=None), \
          patch("app.services.dataset_registry.dataset_registry.version_manager.find_prior_version", return_value=prior), \
          patch("app.services.dataset_registry.dataset_registry.metadata_cache.insert_master_dataset"), \
-         patch("app.services.dataset_registry.dataset_registry.metadata_cache.insert_copy"), \
-         patch("app.services.dataset_registry.dataset_registry.reference_counter.increment"):
+         patch("app.services.dataset_registry.dataset_registry.metadata_cache.insert_copy_and_increment_reference"):
         result = registry.register(filename="edits.csv", file_extension=".csv", content=b"edited,content\n1,2\n")
 
     assert result.was_duplicate is False

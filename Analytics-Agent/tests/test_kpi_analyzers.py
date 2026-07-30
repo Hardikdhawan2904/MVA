@@ -80,6 +80,28 @@ def test_kpi_summary_strategy_empty_df_is_error():
     assert "error" in result
 
 
+def test_kpi_summary_strategy_missing_actual_column_is_an_explicit_error():
+    """Real bug, found during a handover code review: when a curated KPI's
+    actual_column doesn't exist in the uploaded dataset (the likely case
+    for the new Finance/HR/Payments/Customer starter plugins, whose
+    definitions assume specific column names), this used to silently
+    return {"evidence": {"kpi": ..., "unit": ...}} with no actual/budget
+    values and no explanation. Must now name the missing column instead."""
+    df = pd.DataFrame({"some_other_column": [1.0, 2.0]})
+    result = KPISummaryStrategy().compute(df, _GWP_KPI)
+    assert "error" in result
+    assert "gwp_actual" in result["error"]
+    assert "evidence" not in result
+
+
+def test_kpi_variance_strategy_missing_actual_column_is_an_explicit_error():
+    df = pd.DataFrame({"some_other_column": [1.0, 2.0]})
+    result = KPIVarianceStrategy().compute(df, _GWP_KPI)
+    assert "error" in result
+    assert "gwp_actual" in result["error"]
+    assert "evidence" not in result
+
+
 def test_kpi_summary_strategy_uses_mean_for_ratio_unit():
     ratio_kpi = {**_GWP_KPI, "unit": "%", "actual_column": "loss_ratio_actual", "budget_column": None}
     df = pd.DataFrame({"loss_ratio_actual": [80.0, 100.0]})

@@ -25,7 +25,7 @@ from app.agents.analytics_agent.graph import (
 from app.config import ML_READINESS_THRESHOLD, LLM_READINESS_THRESHOLD
 from app.services.evidence.evidence_builder import Evidence
 
-_DATASET = Path(r"C:\Users\dhawa\mva\Schema-Intelligence-Layer\test_data\insurance_variance_data_native.csv")
+_DATASET = Path(__file__).parent / "fixtures" / "insurance_variance_data_native.csv"
 _REGISTRY = _load_model_registry()  # the real ml/model_registry.json — tests below assert against
                                      # its actual current values rather than hardcoding stale numbers
 

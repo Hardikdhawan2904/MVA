@@ -4,14 +4,14 @@
       "algorithm": "LightGBM",
       "target": "revenue",
       "r2": 0.5453495361627355,
-      "timestamp": "2026-07-28T22:57:59.925881"
+      "timestamp": "2026-07-30T07:24:31.094057"
     },
     "isolation_forest": {
       "algorithm": "IsolationForest",
       "anomaly_count": 50,
       "total_records": 1000,
       "contamination": 0.05,
-      "timestamp": "2026-07-28T22:58:51.387685"
+      "timestamp": "2026-07-30T07:24:27.510397"
     },
     "xgboost_classifier": {
       "algorithm": "XGBoost",
@@ -39,12 +39,12 @@
     "kmeans_segmentation": {
       "algorithm": "KMeans",
       "n_clusters": 3,
-      "timestamp": "2026-07-28T22:57:59.056361"
+      "timestamp": "2026-07-30T07:24:30.350124"
     },
     "prophet_forecast": {
       "algorithm": "Prophet",
       "periods": 6,
-      "timestamp": "2026-07-28T22:58:38.360846"
+      "timestamp": "2026-07-30T07:24:37.533569"
     }
   }
 }

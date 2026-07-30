@@ -173,7 +173,7 @@ class RuleEngine:
         if not path.exists():
             logger.warning(f"Rules file not found: {path}")
             return {}
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
 
     @staticmethod
@@ -181,7 +181,7 @@ class RuleEngine:
         if not path.exists():
             logger.warning(f"Rules file not found: {path}")
             return {}
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
 
     # ── Business Rule Evaluation ──────────────────────────────────────────────
@@ -270,10 +270,10 @@ class RuleEngine:
     def _persist_new_rules(self):
         """Write updated new_rules back to config/business_rules.yml."""
         try:
-            with open(self._business_rules_path, "r") as f:
+            with open(self._business_rules_path, "r", encoding="utf-8") as f:
                 full_config = yaml.safe_load(f) or {}
             full_config["new_rules"] = self._new_rules
-            with open(self._business_rules_path, "w") as f:
+            with open(self._business_rules_path, "w", encoding="utf-8") as f:
                 yaml.dump(full_config, f, default_flow_style=False, allow_unicode=True)
             logger.info(f"business_rules.yml updated: {len(self._new_rules)} dynamic rules")
         except Exception as e:
@@ -382,7 +382,7 @@ class RuleEngine:
         self._kpis[key] = definition
         # Persist
         all_data = {"kpis": self._kpis}
-        with open(self._kpi_definitions_path, "w") as f:
+        with open(self._kpi_definitions_path, "w", encoding="utf-8") as f:
             json.dump(all_data, f, indent=2)
         logger.info(f"New KPI added to Rule Engine: '{key}'")
         return True

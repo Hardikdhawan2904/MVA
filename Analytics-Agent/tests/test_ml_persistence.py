@@ -19,7 +19,7 @@ from app.services.ml.classifier import RiskSegmenter, VarianceClassifier, SEGMEN
 from app.services.ml.forecaster import LightGBMForecaster
 from app.services.tools.rule_engine import _safe_eval
 
-_DATASET = Path(r"C:\Users\dhawa\mva\Schema-Intelligence-Layer\test_data\insurance_variance_data_native.csv")
+_DATASET = Path(__file__).parent / "fixtures" / "insurance_variance_data_native.csv"
 
 pytestmark = pytest.mark.skipif(
     not _DATASET.exists(), reason=f"Insurance test dataset not found at {_DATASET}"

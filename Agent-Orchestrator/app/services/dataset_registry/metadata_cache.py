@@ -328,6 +328,37 @@ def insert_copy(copy: DatasetCopy) -> None:
         conn.close()
 
 
+def insert_copy_and_increment_reference(copy: DatasetCopy) -> None:
+    """Same as insert_copy() + reference_counter.increment(), but as one
+    connection/one transaction instead of two separately-committed round
+    trips. Closes a real gap: a crash between the two separate calls left
+    a DatasetCopy row that was never counted, permanently under-counting
+    reference_count (returned verbatim by GET /datasets/masters — a
+    user-visible field, not just internal bookkeeping). The delete
+    guardrail itself was never at risk, since it always recomputes a live
+    COUNT(*) rather than trusting this cached column — but the exposed
+    reference_count could still lie to an operator deciding whether it's
+    safe to force-delete something."""
+    conn = _get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO dataset_copies (copy_id, fingerprint, user_id, uploaded_filename, version, deleted_flag)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (copy.copy_id, copy.fingerprint, copy.user_id, copy.uploaded_filename, copy.version, copy.deleted_flag),
+        )
+        cur.execute(
+            "UPDATE master_datasets SET reference_count = reference_count + 1 WHERE fingerprint = %s",
+            (copy.fingerprint,),
+        )
+        conn.commit()
+        cur.close()
+    finally:
+        conn.close()
+
+
 def list_master_datasets(limit: int = 100) -> list[MasterDataset]:
     conn = _get_connection()
     try:

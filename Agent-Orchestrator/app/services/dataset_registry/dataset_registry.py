@@ -56,6 +56,20 @@ class DatasetRegistry:
         elif delta < 0:
             reference_counter.decrement(fingerprint)
 
+    def _create_copy_and_increment(self, *, fingerprint: str, uploaded_filename: str, version: int,
+                                    user_id: str | None = None) -> DatasetCopy:
+        """Used by register() instead of create_copy() + update_reference_count()
+        separately — one connection/one transaction for the insert+increment
+        pair, so a crash between the two steps can never under-count
+        reference_count (see metadata_cache.insert_copy_and_increment_reference's
+        own docstring for why this matters)."""
+        copy = DatasetCopy(
+            copy_id=str(uuid4()), fingerprint=fingerprint, uploaded_filename=uploaded_filename,
+            upload_timestamp=datetime.now(timezone.utc), version=version, user_id=user_id, deleted_flag=False,
+        )
+        metadata_cache.insert_copy_and_increment_reference(copy)
+        return copy
+
     def register(self, *, filename: str, file_extension: str, content: bytes,
                  user_id: str | None = None) -> RegisterResult:
         """Stage 0A's entry point — fingerprint -> lookup -> duplicate /
@@ -67,11 +81,10 @@ class DatasetRegistry:
 
         existing = self.detect_duplicate(fingerprint)
         if existing is not None:
-            copy = self.create_copy(
+            copy = self._create_copy_and_increment(
                 fingerprint=fingerprint, uploaded_filename=filename, version=existing.latest_version,
                 user_id=user_id,
             )
-            self.update_reference_count(fingerprint, delta=+1)
             metadata_cache.touch_last_referenced(fingerprint)
             cached_result = self.get_cached_result(fingerprint)
             return RegisterResult(
@@ -99,9 +112,9 @@ class DatasetRegistry:
         )
         metadata_cache.insert_master_dataset(master)
 
-        copy = self.create_copy(fingerprint=fingerprint, uploaded_filename=filename, version=version_number,
-                                 user_id=user_id)
-        self.update_reference_count(fingerprint, delta=+1)
+        copy = self._create_copy_and_increment(
+            fingerprint=fingerprint, uploaded_filename=filename, version=version_number, user_id=user_id,
+        )
 
         return RegisterResult(
             master=master, copy=copy, was_duplicate=False, is_new_version=prior_version is not None,

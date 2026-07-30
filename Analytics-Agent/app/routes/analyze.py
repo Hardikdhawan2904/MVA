@@ -10,9 +10,10 @@ import json
 import logging
 from typing import Any
 
-from fastapi import APIRouter, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 
 from app.agents.analytics_agent.graph import run_analytics_graph
+from app.config import MAX_UPLOAD_SIZE_MB
 from app.schemas.responses import AnalysisResponse
 
 logger = logging.getLogger(__name__)
@@ -22,7 +23,7 @@ router = APIRouter(tags=["Analytics"])
 @router.post("/analyze", response_model=AnalysisResponse)
 async def analyze(
     file: UploadFile = File(..., description="CSV dataset to answer the question against"),
-    business_question: str = Form(..., description="The business question to answer"),
+    business_question: str = Form(..., max_length=2000, description="The business question to answer"),
     conversation_id: str | None = Form(
         default=None,
         description="Omit for a new conversation (a fresh id is generated and returned in the response). "
@@ -105,6 +106,13 @@ async def analyze(
     )
 
     content = await file.read()
+    max_bytes = MAX_UPLOAD_SIZE_MB * 1024 * 1024
+    if len(content) > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File exceeds the maximum upload size of {MAX_UPLOAD_SIZE_MB}MB "
+                   f"(got {len(content) / (1024 * 1024):.1f}MB).",
+        )
 
     result = run_analytics_graph(
         file_content=content,

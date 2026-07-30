@@ -9,11 +9,45 @@ from typing import Any, Optional
 
 import psycopg2
 import psycopg2.extras
+import psycopg2.pool
 
 from app.config import settings
 from app.models.schemas import DatasetMetadata
 
 logger = logging.getLogger(__name__)
+
+# Pooled instead of a fresh psycopg2.connect() per call (the previous
+# pattern here) — every request was opening 3-5 brand-new TCP connections
+# + auth handshakes to Postgres. Agent 2 already uses a pooled SQLAlchemy
+# engine (pool_size=5, max_overflow=10) — mirrors those same values.
+# ThreadedConnectionPool (not SimpleConnectionPool) since FastAPI can serve
+# concurrent requests from multiple threads.
+_MIN_POOL_CONNECTIONS = 1
+_MAX_POOL_CONNECTIONS = 15  # pool_size(5) + max_overflow(10), same as Agent 2
+_pool: psycopg2.pool.ThreadedConnectionPool | None = None
+
+
+def _get_pool() -> psycopg2.pool.ThreadedConnectionPool:
+    global _pool
+    if _pool is None:
+        _pool = psycopg2.pool.ThreadedConnectionPool(
+            _MIN_POOL_CONNECTIONS,
+            _MAX_POOL_CONNECTIONS,
+            host=settings.POSTGRES_HOST,
+            port=settings.POSTGRES_PORT,
+            dbname=settings.POSTGRES_DB,
+            user=settings.POSTGRES_USER,
+            password=settings.POSTGRES_PASSWORD,
+            cursor_factory=psycopg2.extras.RealDictCursor,
+            options="-c search_path=agent1",
+        )
+    return _pool
+
+
+def _release_connection(conn: psycopg2.extensions.connection) -> None:
+    """Use in place of conn.close() everywhere in this module — returns
+    the connection to the pool instead of actually closing the socket."""
+    _get_pool().putconn(conn)
 
 # SQL for creating the metadata table
 CREATE_TABLE_SQL = """
@@ -78,29 +112,45 @@ SELECT_ALL_SQL = """
 SELECT * FROM dataset_metadata ORDER BY upload_timestamp DESC;
 """
 
+CREATE_ID_SEQUENCE_SQL = """
+CREATE SEQUENCE IF NOT EXISTS dataset_id_seq;
+"""
+
+# One-time (and idempotent-safe, re-run on every init_db()) reseed so the
+# sequence continues from wherever the old SELECT COUNT(*)-based ID
+# generation left off, rather than restarting at DS_001 and colliding with
+# rows that already exist. GREATEST() means this can only ever move the
+# sequence forward, never backward, so re-running it on every startup is safe.
+RESEED_ID_SEQUENCE_SQL = """
+SELECT setval(
+    'dataset_id_seq',
+    GREATEST(
+        COALESCE(
+            (SELECT MAX(CAST(SUBSTRING(dataset_id FROM 4) AS INTEGER))
+             FROM dataset_metadata WHERE dataset_id ~ '^DS_[0-9]+$'),
+            0
+        ),
+        (SELECT last_value FROM dataset_id_seq)
+    )
+);
+"""
+
 GET_NEXT_ID_SQL = """
-SELECT COUNT(*) AS count FROM dataset_metadata;
+SELECT nextval('dataset_id_seq') AS next_id;
 """
 
 
 def _get_connection() -> psycopg2.extensions.connection:
-    """Create a new PostgreSQL connection."""
-    conn = psycopg2.connect(
-        host=settings.POSTGRES_HOST,
-        port=settings.POSTGRES_PORT,
-        dbname=settings.POSTGRES_DB,
-        user=settings.POSTGRES_USER,
-        password=settings.POSTGRES_PASSWORD,
-        cursor_factory=psycopg2.extras.RealDictCursor,
-        options="-c search_path=agent1",
-    )
-    return conn
+    """Borrow a connection from the pool. Callers must release it via
+    _release_connection(conn) when done — never conn.close() directly,
+    which would just discard it instead of returning it to the pool."""
+    return _get_pool().getconn()
 
 
 def init_db() -> None:
     """Initialize the database and create tables if they don't exist."""
+    conn = _get_connection()
     try:
-        conn = _get_connection()
         cur = conn.cursor()
         cur.execute("CREATE SCHEMA IF NOT EXISTS agent1")
         cur.execute(CREATE_TABLE_SQL)
@@ -110,31 +160,43 @@ def init_db() -> None:
         cur.execute("ALTER TABLE dataset_metadata ADD COLUMN IF NOT EXISTS column_data_types TEXT DEFAULT '[]'")
         cur.execute("ALTER TABLE dataset_metadata ADD COLUMN IF NOT EXISTS quality_report TEXT DEFAULT NULL")
         cur.execute("ALTER TABLE dataset_metadata ADD COLUMN IF NOT EXISTS quality_score REAL DEFAULT NULL")
+        cur.execute(CREATE_ID_SEQUENCE_SQL)
+        cur.execute(RESEED_ID_SEQUENCE_SQL)
         conn.commit()
         cur.close()
-        conn.close()
         logger.info(
             f"Database initialized at {settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}"
         )
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")
         raise
+    finally:
+        _release_connection(conn)
 
 
 def get_next_dataset_id() -> str:
     """
-    Generate the next sequential dataset ID.
+    Generate the next sequential dataset ID, atomically.
+
+    Uses a real Postgres SEQUENCE (nextval()) rather than SELECT COUNT(*)
+    followed by a separate INSERT — the previous approach let two
+    concurrent uploads read the same count and generate the same ID,
+    causing the second insert to fail on the dataset_id PRIMARY KEY.
+    nextval() is safe under concurrency by construction — no
+    read-then-write race, no application-level locking needed.
 
     Returns:
         A string like 'DS_001', 'DS_002', etc.
     """
     conn = _get_connection()
-    cur = conn.cursor()
-    cur.execute(GET_NEXT_ID_SQL)
-    count = cur.fetchone()["count"]
-    cur.close()
-    conn.close()
-    return f"DS_{count + 1:03d}"
+    try:
+        cur = conn.cursor()
+        cur.execute(GET_NEXT_ID_SQL)
+        next_id = cur.fetchone()["next_id"]
+        cur.close()
+        return f"DS_{next_id:03d}"
+    finally:
+        _release_connection(conn)
 
 
 def insert_metadata(metadata: DatasetMetadata) -> None:
@@ -181,7 +243,7 @@ def insert_metadata(metadata: DatasetMetadata) -> None:
         logger.error(f"Failed to insert metadata for {metadata.dataset_id}: {e}")
         raise
     finally:
-        conn.close()
+        _release_connection(conn)
 
 
 def update_metadata_after_classification(
@@ -228,7 +290,7 @@ def update_metadata_after_classification(
         logger.error(f"Failed to update metadata for {dataset_id}: {e}")
         raise
     finally:
-        conn.close()
+        _release_connection(conn)
 
 
 def _row_to_metadata(row: dict) -> DatasetMetadata:
@@ -276,11 +338,13 @@ def get_metadata(dataset_id: str) -> Optional[DatasetMetadata]:
         DatasetMetadata or None if not found.
     """
     conn = _get_connection()
-    cur = conn.cursor()
-    cur.execute(SELECT_METADATA_SQL, (dataset_id,))
-    row = cur.fetchone()
-    cur.close()
-    conn.close()
+    try:
+        cur = conn.cursor()
+        cur.execute(SELECT_METADATA_SQL, (dataset_id,))
+        row = cur.fetchone()
+        cur.close()
+    finally:
+        _release_connection(conn)
 
     if row is None:
         return None
@@ -292,11 +356,13 @@ def list_all_metadata() -> list[DatasetMetadata]:
     List all dataset metadata records, ordered by upload time (newest first).
     """
     conn = _get_connection()
-    cur = conn.cursor()
-    cur.execute(SELECT_ALL_SQL)
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
+    try:
+        cur = conn.cursor()
+        cur.execute(SELECT_ALL_SQL)
+        rows = cur.fetchall()
+        cur.close()
+    finally:
+        _release_connection(conn)
     return [_row_to_metadata(row) for row in rows]
 
 
@@ -305,11 +371,13 @@ def get_metadata_by_name(filename: str) -> Optional[DatasetMetadata]:
     Retrieve metadata for a dataset by its filename.
     """
     conn = _get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM dataset_metadata WHERE dataset_name = %s LIMIT 1;", (filename,))
-    row = cur.fetchone()
-    cur.close()
-    conn.close()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM dataset_metadata WHERE dataset_name = %s LIMIT 1;", (filename,))
+        row = cur.fetchone()
+        cur.close()
+    finally:
+        _release_connection(conn)
 
     if row is None:
         return None
@@ -348,4 +416,4 @@ def update_metadata_after_reupload(
         logger.error(f"Failed to update metadata after reupload for {dataset_id}: {e}")
         raise
     finally:
-        conn.close()
+        _release_connection(conn)

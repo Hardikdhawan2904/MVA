@@ -536,11 +536,15 @@ def run_analytics_graph(
             "execution_summary": summary,
         }
     except Exception as e:
+        # Full exception (including traceback, which can contain internal
+        # file paths) is logged server-side only — never echoed back into
+        # the HTTP response body, which previously leaked raw Python
+        # exception text (f"Analytics Agent failed: {e}") to the caller.
         logger.error(f"analytics_graph_failed: {e}", exc_info=True)
         return {
             "status": "error",
             "query": business_question,
-            "response": f"Analytics Agent failed: {e}",
+            "response": "Analytics Agent failed to process this request. Please try again or contact support.",
             "conversation_id": conversation_id,
             "ml_readiness_score_used": ml_readiness_score,
             "llm_readiness_score_used": llm_readiness_score,

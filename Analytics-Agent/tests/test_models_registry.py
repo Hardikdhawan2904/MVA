@@ -22,7 +22,7 @@ from app.services.planning.models import PlannedAnalysis
 from app.services.scheduling.budget_config import BudgetConfig
 from app.services.scheduling.models import ScheduledAnalysis
 
-_INSURANCE_CSV = Path(r"C:\Users\dhawa\mva\Schema-Intelligence-Layer\test_data\insurance_variance_data_native.csv")
+_INSURANCE_CSV = Path(__file__).parent / "fixtures" / "insurance_variance_data_native.csv"
 pytestmark_insurance = pytest.mark.skipif(not _INSURANCE_CSV.exists(), reason="Insurance dataset not found")
 
 

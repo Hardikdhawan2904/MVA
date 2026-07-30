@@ -3,8 +3,8 @@ Local test script — runs the full Dataset Identification Agent pipeline
 directly from the command line, no server required.
 
 Usage:
-    python test_local.py                          # Tests all files in test_data/
-    python test_local.py test_data/banking_variance_data.csv   # Test a single file
+    python test_local.py                          # Tests all files in ../test_data/
+    python test_local.py ../test_data/banking_variance_data.csv   # Test a single file
 """
 
 import sys
@@ -282,10 +282,11 @@ def main():
         # Process specific file(s) passed as arguments
         files = sys.argv[1:]
     else:
-        # Process all files in test_data/
-        test_data_dir = Path(__file__).parent / "test_data"
+        # Process all files in the repo-root test_data/ (shared across all
+        # services, not owned by this one specifically — see repo root README).
+        test_data_dir = Path(__file__).parent.parent / "test_data"
         if not test_data_dir.exists():
-            print("Error: test_data/ folder not found.")
+            print("Error: ../test_data/ folder not found.")
             print("Usage: python test_local.py <file_path>")
             sys.exit(1)
 
@@ -295,7 +296,7 @@ def main():
         ]
 
         if not files:
-            print("No CSV or Excel files found in test_data/")
+            print("No CSV or Excel files found in ../test_data/")
             sys.exit(1)
 
     print(f"\n Dataset Identification Agent — Local Test")

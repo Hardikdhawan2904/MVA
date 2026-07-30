@@ -54,7 +54,7 @@ Deterministic infrastructure, not an agent — sits in front of Agent 1/Agent 2 
 
 - **Identity**: SHA-256 of the raw uploaded bytes — exact match only, no fuzzy/near-duplicate detection. A byte-identical re-upload shares a **Master Dataset**; any change at all (even one cell) gets its own.
 - **Versioning**: a re-upload under a filename the Registry has already seen, but with different content, is treated as a new *version* of the same logical dataset (`latest_version` increments, `previous_fingerprint` links back) rather than either overwriting history or being mistaken for something unrelated.
-- **Storage**: Master Dataset bytes are written once, content-addressed, under `MASTER_DATASET_STORAGE_DIR` (default `C:\MVAData\master-datasets\<hash[:2]>\<hash>.<ext>`). Every upload — hit or miss — creates its own lightweight `DatasetCopy` record; deleting a copy only ever removes that reference, never the Master Dataset. The Master Dataset itself is a reference-counted, separate, deliberate action — `DELETE /datasets/masters/{fingerprint}` refuses unless forced when active copies still exist.
+- **Storage**: Master Dataset bytes are written once, content-addressed, under `MASTER_DATASET_STORAGE_DIR` (default `./data/master-datasets/<hash[:2]>/<hash>.<ext>` — relative to this service's own working directory, so an unset env var works out of the box on any machine/OS instead of assuming a specific Windows path exists). Every upload — hit or miss — creates its own lightweight `DatasetCopy` record; deleting a copy only ever removes that reference, never the Master Dataset. The Master Dataset itself is a reference-counted, separate, deliberate action — `DELETE /datasets/masters/{fingerprint}` refuses unless forced when active copies still exist.
 - **Caching**: on a cache hit, Agent 1's and Agent 2's cached responses are served directly (`master_dataset_results`, keyed by fingerprint) and neither service is actually called. Agent 3 is never cached/skipped — its answer depends on the specific `business_question`, not just dataset identity, so it runs on every request regardless of the Stage 0A outcome.
 - **Non-fatal by design**: a Postgres outage or unwritable storage directory degrades to "the cache always misses, the pipeline runs exactly as it did before this feature existed" — never breaks the core relay function.
 - Bootstraps its own Postgres schema (`orchestrator`, 3 tables: `master_datasets`, `dataset_copies`, `master_dataset_results`) on startup, in the same shared native Postgres instance as Agent 1/2/3 — see [`Shared-Postgres/README.md`](../Shared-Postgres/README.md).
@@ -122,7 +122,8 @@ Agent 1, Agent 2, and (if you want the analytics Q&A stage) Agent 3 must already
 | POSTGRES_DB | mva_pipeline | Shared Postgres database |
 | POSTGRES_USER | postgres | Shared Postgres user |
 | POSTGRES_PASSWORD | postgres | Shared Postgres password |
-| MASTER_DATASET_STORAGE_DIR | C:\MVAData\master-datasets | Content-addressed physical storage for Master Dataset bytes |
+| MASTER_DATASET_STORAGE_DIR | ./data/master-datasets | Content-addressed physical storage for Master Dataset bytes (relative to this service's working directory by default) |
+| MAX_UPLOAD_SIZE_MB | 100 | Rejects `POST /pipeline/run`/`/pipeline/ask` uploads over this size with a `413`, before any bytes are hashed or forwarded downstream |
 
 No API keys or secrets live here — LLM credentials belong to Agent 1, Agent 2, and Agent 3 individually. The `POSTGRES_*`/`MASTER_DATASET_STORAGE_DIR` keys are usually inherited from the shared root `.env` (see the [root README](../README.md)) — only needed here if this service points at a different Postgres instance than the rest of the pipeline.
 
@@ -160,9 +161,69 @@ curl -X POST http://localhost:8002/pipeline/ask \
   -F "run_id=<agent2.run_id from the /pipeline/run response above>"
 ```
 
+## How Scoring Works
+
+The Orchestrator **computes zero scores itself** — it's a relay and a
+deterministic-inference layer, not a scoring engine. Two things worth
+understanding about how it shapes what gets scored downstream:
+
+1. **It doesn't recompute Agent 1's quality gate or Agent 2's quality/
+   readiness scores** — `agent1`/`agent2` in the response are those
+   services' own outputs, forwarded verbatim (see
+   `Schema-Intelligence-Layer/README.md` and
+   `MVA-use-case-latest-one/README.md` for the exact formulas). The one
+   exception is `_readiness_and_features()` (`nodes/pipeline.py`), which
+   extracts Agent 2's `ml_readiness`/`llm_readiness` **plain composite
+   `.score`** (never the `dataset_score`/`task_compatibility_score`
+   split) plus each assessment's full breakdown, purely to forward them
+   to Agent 3 — no new arithmetic happens here.
+2. **Automatic column-quality inference** (`_infer_mandatory_and_unique`/
+   `_infer_consistency_rules`, documented above) runs *before* Agent 2
+   scores anything — it decides which columns count as `mandatory`/
+   `expected_unique` and which cross-field consistency rules apply, which
+   directly changes Agent 2's `completeness`/`consistency`/`uniqueness`
+   dimension scores and therefore `ml_readiness`. This is real, if
+   indirect, influence over the final score — worth knowing when a
+   quality score looks different than expected on a re-run with a
+   different sample of the same data (the ≥99%-of-sample consistency-rule
+   check can occasionally propose or drop a rule between runs on a
+   borderline dataset).
+
 ## Known Limitations
+
+Fixed during the handover pass: upload size limits (`MAX_UPLOAD_SIZE_MB`,
+413 on exceed, checked before any hashing/forwarding) and a
+`max_length=2000` cap on `business_question` were added to both
+`/pipeline/run` and `/pipeline/ask` (previously unbounded, forwarded
+verbatim into Agent 3's Groq prompt and several regex scans);
+`MASTER_DATASET_STORAGE_DIR`'s default changed from a hardcoded absolute
+Windows path to a relative one so a fresh clone works cross-platform
+without manual configuration; the Dataset Registry's `create_copy()` +
+`update_reference_count()` pair now runs in one transaction instead of
+two separately-committed connections (a crash between them could
+under-count `reference_count` — the delete guardrail itself recomputes a
+live count so this could never cause a wrongful deletion, but the count
+`GET /datasets/masters` reports could lie).
+
+Still open — real findings that need a conscious decision rather than a
+same-session patch:
 
 - No retry/circuit-breaker logic on the calls to Agent 1/Agent 2/Agent 3 — a transient failure surfaces immediately as a `502` (Agent 1/2) or `agent3.status == "failed"` (Agent 3) rather than being retried
 - No authentication in v1
 - Domain auto-derivation canonicalizes known synonyms of Agent 1's broader vocabulary onto Agent 2's 5 supported domains (`_canonicalize_domain()` / `_DOMAIN_SYNONYMS` in `app/agents/orchestration_agent/nodes/pipeline.py` — e.g. `"Human Resources"` → `"HR"`, case variants), but the map is finite: an unrecognized synonym still fails Agent 2's exact-match check. Notably, Agent 1's classification prompt doesn't suggest `"Payments"` or `"Customer"` as domain names at all (see `Schema-Intelligence-Layer/app/prompts/llm_service_prompt.py`), so those two domains rarely get classified into by Agent 1 in the first place — no amount of synonym-mapping here fixes that; it would need a prompt change in Agent 1.
 - `POST /pipeline/ask` still requires re-uploading the file, even though the Dataset Registry (Stage 0A) now durably stores every upload's raw bytes, content-addressed by fingerprint (`app/services/dataset_registry/storage.py`). The durable storage this limitation used to say didn't exist now does — `/pipeline/ask` just isn't wired to look the file up by `run_id`/fingerprint yet, it's a genuinely closeable gap now rather than a missing capability. Read directly by `SQLTool`, that lookup would let a future version drop the re-upload requirement entirely.
+- **No retention/eviction policy for the Dataset Registry's physical
+  storage** — `MASTER_DATASET_STORAGE_DIR` grows forever; only a manual
+  per-fingerprint `DELETE /datasets/masters/{fingerprint}?force=` exists.
+  The caching feature's entire premise is "every unique upload lives
+  forever," which is fine until disk fills. A suggested next step is
+  LRU-by-`last_referenced_at` eviction, not implemented — a product
+  decision about retention policy, not a bug.
+- Blocking synchronous I/O (the Dataset Registry's psycopg2 calls) runs
+  directly on this service's async LangGraph nodes — same cross-service
+  issue documented in `Schema-Intelligence-Layer/README.md`'s Known
+  Limitations; not fixed here for the same reason (deserves one general
+  fix across all 4 services, not four independent partial patches).
+- Default DB credentials (`postgres`/`postgres`) ship as fallbacks — a
+  repo-wide convention, flagged as "change before production" rather than
+  altered in isolation here.

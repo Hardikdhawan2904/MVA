@@ -165,6 +165,7 @@ narrate facts from a prior turn as if they were computed for this one."""
                 messages=messages,
                 temperature=GROQ_TEMPERATURE,
                 max_tokens=GROQ_MAX_TOKENS,
+                timeout=30.0,
             )
             narrative = response.choices[0].message.content
             narrative = self._enforce_confidence_section(narrative, confidence_text)

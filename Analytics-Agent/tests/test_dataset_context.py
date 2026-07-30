@@ -21,8 +21,9 @@ import pytest
 from app.services.dataset_context.context_builder import DatasetContextBuilder
 from app.services.dataset_context.local_schema_inferer import LocalSchemaInferer
 
-_INSURANCE_CSV = Path(r"C:\Users\dhawa\mva\Schema-Intelligence-Layer\test_data\insurance_variance_data_native.csv")
-_HR_CSV = Path(r"C:\Users\dhawa\mva\MVA-use-case-latest-one\tests\fixtures\hr_employee_payroll.csv")
+_FIXTURES_DIR = Path(__file__).parent / "fixtures"
+_INSURANCE_CSV = _FIXTURES_DIR / "insurance_variance_data_native.csv"
+_HR_CSV = _FIXTURES_DIR / "hr_employee_payroll.csv"
 
 pytestmark_insurance = pytest.mark.skipif(not _INSURANCE_CSV.exists(), reason="Insurance dataset not found")
 pytestmark_hr = pytest.mark.skipif(not _HR_CSV.exists(), reason="HR fixture not found")
@@ -160,6 +161,59 @@ def test_dataset_context_builder_treats_empty_column_profiles_as_missing():
     df = pd.DataFrame({"salary": [1000, 2000]})
     context = DatasetContextBuilder().build(df, column_profiles=[])
     assert context.context_source == "local_fallback"
+
+
+def test_dataset_context_builder_detects_temporal_column_agent2_classified_as_identifier():
+    """Real bug, found live: a one-row-per-day reporting_date column is
+    100% unique, so Agent 2 classifies it candidate/confirmed_column_role
+    "identifier" (is_grain_key=True) rather than "temporal_dimension" —
+    confirmed against a real /pipeline/run response. Trusting semantic_role
+    alone made every temporal-dependent planning rule (trend/forecast/
+    correlation/anomaly_detection/time_series) silently produce nothing for
+    any dataset shaped this way. refined_data_type ("date"/"datetime") must
+    still mark the column temporal even when Agent 2's role says
+    identifier — this is the fix, locked in here."""
+    profile = _sample_agent2_column_profile(
+        physical_name="reporting_date",
+        refined_data_type="date",
+        candidate_semantic_type="identifier",
+        candidate_column_role="identifier",
+        confirmed_semantic_type="identifier",
+        confirmed_column_role="identifier",
+        is_grain_key=True,
+    )
+    df = pd.DataFrame({"reporting_date": ["2025-01-01", "2025-01-02", "2025-01-03"]})
+    context = DatasetContextBuilder().build(df, column_profiles=[profile])
+    col = context.column("reporting_date")
+
+    assert col.is_temporal is True
+    assert col.is_identifier is True  # both — a grain key can genuinely also be the time axis
+    assert col.semantic_role == "identifier"  # Agent 2's role classification itself is untouched
+
+
+def test_dataset_context_builder_datetime_refined_type_also_counts_as_temporal():
+    profile = _sample_agent2_column_profile(
+        physical_name="created_at", refined_data_type="datetime",
+        candidate_column_role="identifier", confirmed_column_role="identifier",
+    )
+    df = pd.DataFrame({"created_at": ["2025-01-01T00:00:00"]})
+    context = DatasetContextBuilder().build(df, column_profiles=[profile])
+    assert context.column("created_at").is_temporal is True
+
+
+def test_dataset_context_builder_non_date_identifier_stays_non_temporal():
+    """The fix must not make every identifier temporal — only ones Agent 2
+    actually typed as date/datetime."""
+    profile = _sample_agent2_column_profile(
+        physical_name="policy_id", refined_data_type="text",
+        candidate_column_role="identifier", confirmed_column_role="identifier",
+        is_grain_key=True,
+    )
+    df = pd.DataFrame({"policy_id": ["P001", "P002"]})
+    context = DatasetContextBuilder().build(df, column_profiles=[profile])
+    col = context.column("policy_id")
+    assert col.is_temporal is False
+    assert col.is_identifier is True
 
 
 # ── DatasetContext convenience methods ───────────────────────────────────────

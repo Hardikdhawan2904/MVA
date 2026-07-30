@@ -31,7 +31,7 @@ class CustomerPlugin(ThinKPIDomainPlugin):
         return (detected_domain or "").strip().lower() == "customer"
 
     def get_kpi_definitions(self) -> dict[str, Any]:
-        with open(_PLUGIN_DIR / "kpi_definitions.json") as f:
+        with open(_PLUGIN_DIR / "kpi_definitions.json", encoding="utf-8") as f:
             return json.load(f).get("kpis", {})
 
     def get_intent_vocabulary(self) -> dict[str, Any]:

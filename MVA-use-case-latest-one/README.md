@@ -158,13 +158,61 @@ All domain-specific behavior is in `config/` YAML files:
 
 ## AI Readiness
 
-All three assessments reuse the same quality evidence with different weight profiles:
+`ReadinessEngine` (`app/services/readiness/readiness_engine.py`) computes
+4 assessments — `analytics_readiness`, `ml_readiness`, `llm_readiness`,
+`overall_ai_readiness` — each 0-100, `status` thresholds `≥80 ready`,
+`≥60 partially_ready`, `<60 not_ready` (`app/core/constants.py`'s
+`READINESS_READY_THRESHOLD`/`READINESS_PARTIALLY_READY_THRESHOLD`).
 
-- **Analytics**: completeness, dimensions, metrics, grain, temporal fields
-- **ML**: completeness, feature coverage, identifier contamination, row count
-- **LLM**: description coverage, semantic quality, schema clarity
+**Analytics readiness** (dataset-only, no task input): completeness × 20 +
+validity × 15 + consistency × 15 + metrics-available (15 if ≥2 metrics, 8
+if ≥1) + dimensions-available (15 if ≥3, 8 if ≥1) + grain-identified
+(+10) + temporal-fields (+10), capped at 100.
 
-Thresholds: ≥80 ready, ≥60 partially_ready, <60 not_ready
+**ML readiness**: completeness × 20 + consistency × 15 (dataset-only) +
+feature-coverage × 15 (dataset-wide ratio, *or* task-specific when a
+`feature_recommendation` was supplied for this question) + an
+identifier-contamination penalty (up to −10) + row-count adequacy (0/5/
+10/15 by row-count tier) + cardinality-health (5 or 10) + uniqueness × 10.
+
+**LLM readiness**: description-coverage (up to 25, tiered) +
+semantic-quality × 20 + schema-clarity ((1 − avg_null_ratio) × 15) +
+sample-availability × 10 + context-rich-metadata (up to 15) — all
+dataset-only — plus an optional task-dependent "question-suitability"
+boost (up to +10) when `feature_recommendation.recommended_approach ==
+"llm"`.
+
+**The `score` vs. `dataset_score` vs. `task_compatibility_score` split**
+— every assessment reports all three, and they answer different
+questions:
+- **`score`** — that assessment's own blended composite (for ML, this
+  already mixes dataset-only and task-specific evidence internally).
+- **`dataset_score`** — "how good is this data, independent of any
+  question" — analytics always contributes one; ml/llm only when their
+  task-independent sub-scores are computable.
+- **`task_compatibility_score`** — "how well does this data fit *this
+  specific question*" — only ml and llm ever produce one (analytics has
+  no task-dependent input by design); `None` when no `business_question`
+  was asked.
+
+`overall_ai_readiness` combines these three ways, in code
+(`ReadinessEngine.assess_all`):
+```
+overall.score                     = mean(analytics.score, ml.score, llm.score)
+overall.dataset_score             = mean of whichever of analytics/ml/llm.dataset_score are not None
+overall.task_compatibility_score  = mean of whichever of ml/llm.task_compatibility_score are not None
+```
+
+**What Agent 3 actually receives**: the Orchestrator's
+`_readiness_and_features()` forwards `ml_readiness`/`llm_readiness`'s own
+plain **`score`** field (not `overall_ai_readiness`, and not the
+`dataset_score`/`task_compatibility_score` split specifically) — Agent
+3's `ML_READINESS_THRESHOLD`/`LLM_READINESS_THRESHOLD` (both 75.0) gate
+against that forwarded value.
+
+**`config/readiness_weights.yaml` is not actually wired up** — see Known
+Limitations below. The weight values described above are hardcoded
+directly in `readiness_engine.py`, not read from that file.
 
 ## AI Rule Suggestions
 
@@ -221,10 +269,72 @@ alembic downgrade -1
 
 ## Known Limitations
 
-- Drill-down cubes not yet persisted to PostgreSQL (in-memory for demo)
-- LLM integration requires API key; without it, deterministic fallback is used
-- No authentication/authorization in v1
-- Background-thread processing (job abstraction ready for async/queue migration)
-- XLSX workbooks with multiple non-empty sheets require the `sheet_name` form field to disambiguate which sheet to load; omitting it on a multi-sheet file returns a `MULTIPLE_XLSX_SHEETS` error
-- `config/readiness_weights.yaml` documents intended AI-readiness weights but isn't actually loaded by `ReadinessEngine` — the weights are hardcoded in Python instead (see Configuration section above)
-- Individual rule-suggestion generation calls are bounded to the first 30 columns and 5 suggestions per run; not every column gets considered on very wide datasets
+Fixed during the handover pass (see the fix instead of working around it):
+`profile_runs.py`'s hardcoded `timeout=120.0` now reads
+`settings.processing_timeout_seconds`; `ConfigurationRepository` now
+resolves `config/` relative to its own package location instead of the
+process's current working directory; a catch-all
+`@app.exception_handler(Exception)` now guarantees every error, not just
+the 5 explicitly-typed ones, returns the documented `{"error": {...}}`
+envelope instead of Starlette's default unstructured 500.
+
+Still open — real findings that need a conscious product/architecture
+decision rather than a same-session patch:
+
+- **Auth is wired into ~1 of ~17 endpoints.** `app/api/auth.py` exists and
+  `POST /profile-runs` uses `Depends(get_current_user)`, but every rule-
+  suggestion mutation (`approve`/`reject`) and every `GET` sub-resource is
+  unauthenticated. Not fixed here because enabling it on every route would
+  break every current caller (including this session's own manual
+  testing) that isn't sending credentials — a decision for whoever owns
+  the deployment target. Fix, when ready: add `Depends(get_current_user)`
+  to each remaining route in `app/api/routes/`.
+- **A run that exceeds the processing timeout is never persisted.**
+  `create_profile_run` only calls `repo.create_run()`/`persist_*` inside
+  `if completed_job and completed_job.result` — a slow run's `run_id` is
+  handed back to the caller, but `GET /profile-runs/{run_id}/result` 404s
+  forever, even after the background job finishes successfully moments
+  later. Real bug, not fixed here because the correct fix (persist a
+  `status: processing` row eagerly at job creation, then update it on
+  completion) touches core job orchestration and deserves its own test
+  coverage rather than a patch bundled with everything else in this pass.
+- **Blocking synchronous I/O runs directly on the async event loop** —
+  the LLM calls and `wait_for_completion`'s blocking wait inside this
+  service's async routes. A real throughput ceiling under concurrent
+  load, not a correctness bug at the team/dev-tool scale this system runs
+  at today. Same underlying issue as Agent 1's blocking DB/LLM calls (see
+  `Schema-Intelligence-Layer/README.md`'s Known Limitations) — general fix
+  pattern is `run_in_threadpool`/`asyncio.to_thread`, or a pooled async
+  driver, applied once across all 4 services rather than four independent
+  partial patches.
+- **`JobManager._jobs` grows without bound** — no TTL, no eviction, no
+  size cap; every profiling job's result stays in memory for the life of
+  the process. Fine for a dev/demo box, not fine for a long-running
+  server under sustained traffic. Deciding an eviction policy (LRU by
+  last-access? hard TTL?) changes what `GET /profile-runs/{run_id}/result`
+  can promise callers, so it's left as a product decision, not silently
+  fixed. Parallel to Agent 1's unbounded `_dataframes` cache.
+- **Drill-down cubes are computed every run and never persisted** — real
+  work thrown away each time; the endpoint already hardcodes `cubes=[]`
+  with an in-code comment acknowledging the gap. Building real persistence
+  is a genuine feature addition (new repository method + wiring), not a
+  bug fix.
+- **`config/readiness_weights.yaml` documents intended AI-readiness
+  weights but isn't actually loaded by `ReadinessEngine`** — the weights
+  described in the AI Readiness section above are hardcoded directly in
+  `readiness_engine.py` instead. The YAML file is aspirational/
+  documentation-only today.
+- LLM integration requires an API key; without one, the deterministic
+  fallback formatter is used instead.
+- Background-thread processing (the job abstraction is already shaped for
+  an async/queue migration, but runs on threads today).
+- XLSX workbooks with multiple non-empty sheets require the `sheet_name`
+  form field to disambiguate which sheet to load; omitting it on a
+  multi-sheet file returns a `MULTIPLE_XLSX_SHEETS` error.
+- Individual rule-suggestion generation calls are bounded to the first 30
+  columns and 5 suggestions per run; not every column gets considered on
+  very wide datasets.
+- Default DB credentials (`mva_user`/`mva_password`) ship as fallbacks in
+  `.env.example` — a repo-wide convention across all 4 services, flagged
+  here as "change before any production deployment" rather than altered,
+  since altering it would just move the same fallback problem elsewhere.

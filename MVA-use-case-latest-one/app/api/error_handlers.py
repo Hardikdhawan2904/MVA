@@ -1,5 +1,7 @@
 """Centralized error handlers for FastAPI."""
 
+import logging
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
@@ -12,6 +14,8 @@ from app.core.exceptions import (
     RuleSuggestionNotFoundError,
     InvalidRuleTransitionError,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def register_error_handlers(app: FastAPI) -> None:
@@ -68,4 +72,24 @@ def register_error_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=500,
             content={"error": {"code": exc.code, "message": exc.message, "details": exc.details}},
+        )
+
+    @app.exception_handler(Exception)
+    async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+        # Every other handler above covers a known MVABaseException subtype
+        # with a structured {"error": {...}} envelope — this is the only
+        # thing standing between an unexpected exception type (a bare
+        # KeyError, a raw SQLAlchemy IntegrityError, ...) and Starlette's
+        # unstructured default 500, which broke the documented API
+        # contract every other endpoint honors. The real exception is
+        # logged server-side with a traceback; the response never echoes
+        # internal exception text back to the caller.
+        logger.exception(f"Unhandled exception on {request.method} {request.url.path}: {exc}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": {
+                "code": "INTERNAL_SERVER_ERROR",
+                "message": "An unexpected error occurred. Please try again or contact support.",
+                "details": {},
+            }},
         )

@@ -99,6 +99,12 @@ class GroqProvider:
                         content="", model=model, success=False,
                         error="Groq request timed out",
                     )
+                # Same backoff as the rate-limit and generic-exception
+                # branches below — a timeout is at least as likely to
+                # benefit from backoff before retrying as a 429 is;
+                # retrying instantly into an already-slow/overloaded
+                # endpoint doesn't give it a chance to recover.
+                time.sleep(min(2 ** attempt, 10))
 
             except httpx.HTTPStatusError as e:
                 status_code = e.response.status_code
