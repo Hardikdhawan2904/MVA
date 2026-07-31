@@ -1,147 +1,388 @@
-# MVA — Multi-Agent Data Pipeline
+<div align="center">
 
-**One system** that ingests a CSV/Excel dataset and takes it end-to-end: quality gating, schema classification, structural profiling, hierarchy inference, business-rule validation, AI-readiness scoring, chart generation, and AI-proposed rule suggestions with a human approve/reject loop.
+# 🤖 MVA — Multi-Agent Data Pipeline
 
-Internally it's organized as four cooperating services plus a shared database — not because they're separate projects, but because each stage (classification, profiling, orchestration, Insurance Q&A) is cleanly separable and independently testable. One repo, one dependency set, one way to run it.
+**One upload. End-to-end intelligence.**
 
-## Architecture
+*Quality gating → Schema classification → Deep profiling → Hierarchy inference → AI-readiness scoring → Business-rule validation → Chart generation → Natural language analytics Q&A*
+
+[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
+[![LangGraph](https://img.shields.io/badge/LangGraph-StateGraph-FF6B6B?style=for-the-badge)](https://langchain-ai.github.io/langgraph)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-4169E1?style=for-the-badge&logo=postgresql&logoColor=white)](https://postgresql.org)
+[![Groq](https://img.shields.io/badge/LLM-Groq-F55036?style=for-the-badge)](https://groq.com)
+[![License](https://img.shields.io/badge/License-MIT-22C55E?style=for-the-badge)](LICENSE)
+
+</div>
+
+---
+
+## 📋 Table of Contents
+
+- [Overview](#-overview)
+- [Architecture](#-architecture)
+- [Services at a Glance](#-services-at-a-glance)
+- [The Pipeline, Step by Step](#-the-pipeline-step-by-step)
+- [Quick Start](#-quick-start)
+- [Agent 3 — Analytics Agent](#-agent-3--analytics-agent-optional)
+- [How Scoring Works](#-how-scoring-works)
+- [ML Models Inside Agent 3](#-ml-models-inside-agent-3)
+- [Known Constraints](#-known-constraints)
+- [Project Structure](#-project-structure)
+
+---
+
+## 🔍 Overview
+
+MVA ingests a **CSV or Excel dataset** and takes it through a fully automated, multi-stage intelligence pipeline — no manual domain entry, no configuration per file. Internally, the system is four cooperating FastAPI microservices sharing one database, one virtual environment, and one dependency list. Each stage is cleanly separable and independently testable; the Orchestrator is the only thing that chains them together.
+
+> **Key idea:** Upload once → get quality gating, schema classification, structural profiling, hierarchy inference, business-rule evaluation, AI-readiness scoring, chart generation, and natural language Q&A — all in one API response.
+
+---
+
+## 🏗 Architecture
 
 ```
-                     ┌──────────────────────────────────────┐
-   Upload ─────────▶ │  Agent Orchestrator                    │
-                     │  Stage 0A: Dataset Registry (fingerprint│
-                     │  the upload; a duplicate short-circuits │
-                     │  straight to Agent 3, skipping 1 + 2)   │
-                     └─────────┬──────────────────────────────┘
-                               │ (new content, new version, or
-                               │  force_revalidate)
-              ┌────────────────┴────────────────┐
-              ▼                                  ▼
-   ┌─────────────────────┐          ┌─────────────────────────┐
-   │  Agent 1             │          │  Agent 2                │
-   │  Schema Intelligence  │ ───────▶ │  MVA Data Profiling      │
-   │  Layer                │  domain  │  Engine                  │
-   │  (quality gate,       │  +      │  (profiling, quality,    │
-   │  classification,      │  column │  hierarchy, readiness,   │
-   │  column descriptions) │  descrs │  charts, rule suggestions)│
-   └──────────┬───────────┘          └────────────┬─────────────┘
-              │                                    │
-              └──────────────┬─────────────────────┘
-                              ▼
-                   ┌─────────────────────┐
-                   │   Shared Postgres    │
-                   │  (agent1 / agent2    │
-                   │   schemas, one DB)   │
-                   └──────────┬──────────┘
-                              │ (.csv upload +
-                              │  business_question only)
-                              ▼
-                   ┌─────────────────────┐
-                   │  Agent 3 (optional)  │
-                   │  Analytics Agent     │
-                   │  FastAPI + LangGraph │
-                   └─────────────────────┘
+                     ┌──────────────────────────────────────────┐
+   Upload ─────────▶ │          Agent Orchestrator  :8002        │
+                     │  Stage 0A · Dataset Registry              │
+                     │  (SHA-256 fingerprint — duplicate uploads │
+                     │   short-circuit straight to Agent 3,      │
+                     │   skipping Agent 1 + 2 entirely)          │
+                     └─────────────┬────────────────────────────┘
+                                   │  new content / new version /
+                                   │  force_revalidate=true
+               ┌───────────────────┴──────────────────┐
+               ▼                                       ▼
+   ┌───────────────────────┐          ┌───────────────────────────┐
+   │  Agent 1  :8000        │          │  Agent 2  :8001            │
+   │  Schema Intelligence   │─────────▶│  MVA Data Profiling Engine │
+   │                        │  domain  │                            │
+   │  · Quality gate (10✓) │  +       │  · Structural profiling    │
+   │  · LLM column descrs  │  column  │  · Quality / readiness     │
+   │  · Domain classif.    │  descrs  │  · Hierarchy inference     │
+   │                        │          │  · Charts + rule suggest   │
+   └───────────┬────────────┘          └────────────┬──────────────┘
+               │                                     │
+               └──────────────────┬──────────────────┘
+                                  ▼
+                       ┌─────────────────────┐
+                       │   Shared Postgres    │
+                       │   mva_pipeline  :5433│
+                       │  (agent1 / agent2    │
+                       │   schemas, one DB)   │
+                       └──────────┬───────────┘
+                                  │  .csv upload + business_question
+                                  ▼
+                       ┌─────────────────────┐
+                       │  Agent 3  :8003      │
+                       │  Analytics Agent     │
+                       │  (optional)          │
+                       │  FastAPI + LangGraph │
+                       └─────────────────────┘
 ```
 
-Each service runs as its own FastAPI process (so they can be started, stopped, and observed independently), but they share one virtual environment, one dependency list, and one repo history. The orchestrator is the only thing that chains them together — Agent 3 included, called over HTTP exactly like Agent 1/2. See "Agent 3 — Analytics Agent" below.
+---
 
-## What's inside
+## 📦 Services at a Glance
 
-| Folder | Role | Port |
-|---|---|---|
-| [`Schema-Intelligence-Layer`](./Schema-Intelligence-Layer) | Quality gate, LLM column descriptions, business domain classification | 8000 |
-| [`Data-Profiling-Agent`](./Data-Profiling-Agent) | Deep structural profiling, quality/readiness scoring, hierarchy inference, chart generation, AI rule suggestions | 8001 |
-| [`Agent-Orchestrator`](./Agent-Orchestrator) | Chains Agent 1 → Agent 2 → (optionally) Agent 3 into one call | 8002 |
-| [`Shared-Postgres`](./Shared-Postgres) | The one Postgres server everything persists to, schema-isolated per service | 5433 |
-| [`Analytics-Agent`](./Analytics-Agent) | Agent 3 — domain-agnostic analytics engine (KPI/variance/root-cause/forecast/anomaly/segmentation/clustering/correlation/...), Insurance as the fully-built reference domain | 8003 |
+| Service | Folder | Port | Role |
+|---|---|:---:|---|
+| **Agent 1** — Schema Intelligence Layer | [`Schema-Intelligence-Layer/`](./Schema-Intelligence-Layer) | `8000` | Quality gate (10 checks), LLM column descriptions, business-domain classification |
+| **Agent 2** — Data Profiling Engine | [`Data-Profiling-Agent/`](./Data-Profiling-Agent) | `8001` | Deep structural profiling, quality/readiness scoring, hierarchy inference, chart generation, AI rule suggestions |
+| **Orchestrator** | [`Agent-Orchestrator/`](./Agent-Orchestrator) | `8002` | Chains Agent 1 → Agent 2 → Agent 3; Dataset Registry (caching, deduplication) |
+| **Shared Postgres** | [`Shared-Postgres/`](./Shared-Postgres) | `5433` | One Postgres server, schema-isolated per service (`agent1` / `agent2`) |
+| **Agent 3** — Analytics Agent *(optional)* | [`Analytics-Agent/`](./Analytics-Agent) | `8003` | Domain-agnostic analytics engine — KPI discovery, forecasting, anomaly detection, root-cause analysis, natural language Q&A |
 
-Each has its own README going deeper on that piece specifically — this file is the map, not a duplicate.
+Each service has its own `README.md` going deeper on that piece — this file is the map, not a duplicate.
 
-## Quick Start
+---
 
-1. One virtual environment for the whole thing, from the repo root:
-   ```bash
-   python -m venv venv
-   .\venv\Scripts\activate
-   pip install -r requirements.txt -r requirements-dev.txt
-   ```
-2. Two layers of `.env` files:
-   - **Root** (`cp .env.example .env`, fill in `GROQ_API_KEY`): shared values genuinely identical across Agent 1, Agent 3, and the Orchestrator — the LLM provider key, the `POSTGRES_*` connection details, `LOG_LEVEL`. Each of those three services loads this as a fallback *underneath* its own local `.env` (local always wins on any key both define). Every LLM call in Agent 1/2/3 uses Groq, degrading to a deterministic/template fallback if the call fails or the key is missing — the pipeline never hard-fails because of the LLM.
-   - **Per-service** (`cp .env.example .env` inside `Schema-Intelligence-Layer/`, `Agent-Orchestrator/`, and `Analytics-Agent/`): only what's genuinely local to that service — e.g. Agent 1's `GROQ_MODEL` override, Agent 3's `DATASET_PATH`/`HOST`/`PORT`, the Orchestrator's `AGENT1_BASE_URL`/`AGENT2_BASE_URL`/etc.
-   - `Data-Profiling-Agent` (Agent 2) is the exception — it has its own differently-shaped config (`DATABASE_URL`, `LLM_API_KEY`, a separate Postgres role) and keeps its own fully self-contained `.env`, untouched by the root file.
-3. **First time only** — bootstrap the database. `start-all.ps1` starts the Postgres *process* (native Windows install, not Docker — data dir `C:\PGData\mva-pipeline`, port 5433) but doesn't create the database, schemas, or roles on a genuinely fresh install:
-   ```powershell
-   & "C:\Program Files\PostgreSQL\17\bin\initdb.exe" -D "C:\PGData\mva-pipeline" -U postgres --pwprompt   # only if the data dir doesn't exist yet
-   & "C:\Program Files\PostgreSQL\17\bin\pg_ctl.exe" -D "C:\PGData\mva-pipeline" start
-   & "C:\Program Files\PostgreSQL\17\bin\createdb.exe" -h localhost -p 5433 -U postgres mva_pipeline
-   & "C:\Program Files\PostgreSQL\17\bin\psql.exe" -h localhost -p 5433 -U postgres -d mva_pipeline -f "Shared-Postgres\init\01-create-agent-schemas.sql"
-   cd Data-Profiling-Agent; ..\venv\Scripts\python.exe -m alembic upgrade head; cd ..
-   ```
-   Agent 1 and Agent 3 need no manual step — both create their own schema/tables idempotently at every startup. See [`Shared-Postgres/README.md`](./Shared-Postgres/README.md) for exactly what the bootstrap SQL does and why (including a real, previously-undocumented `search_path` gotcha it now closes). Already-initialized instances (including this repo's own dev machine) skip this step entirely — `start-all.ps1` just starts the existing instance.
-4. Start everything at once:
+## 🔄 The Pipeline, Step by Step
+
+```
+1. Upload CSV/XLSX  →  POST /pipeline/run
+      │
+      ▼
+2. Stage 0A · Dataset Registry
+   ├─ Duplicate? (SHA-256 match)  →  serve cached Agent 1+2 result immediately
+   └─ New / force_revalidate?     →  continue ↓
+
+3. Agent 1 · Quality Gate (10 weighted checks, threshold = 75)
+   ├─ FAIL  →  stop, return 422 with full quality report
+   └─ PASS  →  LLM generates column descriptions + business domain classification
+
+4. Orchestrator canonicalizes domain  →  Agent 2
+
+5. Agent 2 · Full Profiling Pipeline
+   ├─ Structural stats + semantic type detection
+   ├─ Secondary domain classification
+   ├─ Dimensional hierarchy inference
+   ├─ Business rule evaluation (YAML-configured + human-approved rules)
+   ├─ Quality scoring (9 dimensions) + AI-readiness scoring
+   ├─ Chart generation
+   └─ LLM proposes up to 5 candidate business rules (human approve/reject loop)
+
+6. Agent 3 (if .csv + business_question supplied)
+   └─ Answers the question using Agent 2's readiness scores + ML/DuckDB engine
+
+7. Combined response:  agent1 + agent2 + agent3 + fingerprint/copy_id/was_cached
+```
+
+> **Follow-up questions?** Use `POST /pipeline/ask` (with the earlier `agent2.run_id`) — skips Agent 1 & 2 entirely, re-asks Agent 3 alone.
+
+---
+
+## 🚀 Quick Start
+
+### 1 · Create the Virtual Environment
+
+```bash
+python -m venv venv
+# Windows
+.\venv\Scripts\activate
+# macOS / Linux
+source venv/bin/activate
+
+pip install -r requirements.txt -r requirements-dev.txt
+```
+
+### 2 · Configure Environment Variables
+
+Two layers of `.env` files:
+
+```bash
+# Root — shared across Agent 1, Agent 3, and Orchestrator
+cp .env.example .env
+# Fill in: GROQ_API_KEY, POSTGRES_* connection details, LOG_LEVEL
+
+# Per-service — only what's local to that agent
+cp Schema-Intelligence-Layer/.env.example  Schema-Intelligence-Layer/.env
+cp Agent-Orchestrator/.env.example         Agent-Orchestrator/.env
+cp Analytics-Agent/.env.example            Analytics-Agent/.env
+# Data-Profiling-Agent has its own self-contained .env (DATABASE_URL / LLM_API_KEY)
+cp Data-Profiling-Agent/.env.example       Data-Profiling-Agent/.env
+```
+
+> 💡 Each service loads the root `.env` as a **fallback** — local always wins on any key present in both.
+
+### 3 · Bootstrap the Database *(first time only)*
+
+```powershell
+# Windows — native PostgreSQL 17 install, port 5433
+& "C:\Program Files\PostgreSQL\17\bin\initdb.exe"  -D "C:\PGData\mva-pipeline" -U postgres --pwprompt
+& "C:\Program Files\PostgreSQL\17\bin\pg_ctl.exe"  -D "C:\PGData\mva-pipeline" start
+& "C:\Program Files\PostgreSQL\17\bin\createdb.exe" -h localhost -p 5433 -U postgres mva_pipeline
+& "C:\Program Files\PostgreSQL\17\bin\psql.exe"    -h localhost -p 5433 -U postgres -d mva_pipeline `
+    -f "Shared-Postgres\init\01-create-agent-schemas.sql"
+
+# Agent 2 migrations (Alembic)
+cd Data-Profiling-Agent
+..\venv\Scripts\python.exe -m alembic upgrade head
+cd ..
+```
+
+> ✅ Agent 1 and Agent 3 create their own schema/tables idempotently at startup — no manual step needed for them.  
+> ✅ Already-initialized instances skip this step entirely — `start-all.ps1` just starts the existing instance.
+
+### 4 · Start Everything
 
 ```powershell
 powershell -File start-all.ps1
 ```
 
-This starts the shared Postgres instance (idempotently via `pg_ctl` — safe to run whether or not it's already running) plus all four services (using the one shared venv), each in its own terminal window. Then:
+This starts the shared Postgres instance (idempotently) plus all four services, each in its own terminal window.
 
-- Full pipeline (recommended entry point): `http://127.0.0.1:8002/docs`
-- Agent 1 alone: `http://127.0.0.1:8000/docs`
-- Agent 2 alone: `http://127.0.0.1:8001/docs`
-- Agent 3 alone: `http://127.0.0.1:8003/docs`
+| Endpoint | URL |
+|---|---|
+| 🗺 Full pipeline *(recommended entry point)* | http://127.0.0.1:8002/docs |
+| Agent 1 Swagger UI | http://127.0.0.1:8000/docs |
+| Agent 2 Swagger UI | http://127.0.0.1:8001/docs |
+| Agent 3 Swagger UI | http://127.0.0.1:8003/docs |
 
-## The pipeline, end to end
+---
 
-1. **Upload** a CSV/XLSX file to the orchestrator's `/pipeline/run`.
-2. **Dataset Registry (Stage 0A)** fingerprints the raw bytes (SHA-256, exact-match only) and checks the Master Dataset Repository. Every upload — hit or miss — gets a lightweight `DatasetCopy` record; deleting a copy later never touches the underlying data. Two outcomes:
-   - **Duplicate content, already validated**: Agent 1 and Agent 2 are skipped entirely — their cached results are served straight through, byte-identical to the original run. Pass `force_revalidate=true` to bypass the cache and force a fresh run anyway (e.g. to correct a bad past classification).
-   - **New content, a new version of a previously-seen filename, or `force_revalidate`**: continue to step 3 as normal.
-3. **Agent 1** runs a configurable quality gate (10 checks — nulls, duplicates, corrupted values, etc.). Files that fail stop here with a `422`.
-4. Passing files get LLM-generated column descriptions and a business-domain classification.
-5. **Agent 2** receives Agent 1's output — including that domain classification, applied automatically with no manual input — and runs its full profiling pipeline: structural stats, semantic type detection, secondary-domain classification, hierarchy inference, business-rule evaluation (both YAML-configured and previously human-approved rules), quality/readiness scoring, and chart generation.
-6. The LLM also proposes up to 5 candidate business rules from what it saw in that run's columns. These sit as `proposed` until a human approves or rejects them via Agent 2's API — approved rules then automatically apply to every future upload in that domain, closing the loop.
-7. If the caller passed a `business_question` **and** it's a CSV, **Agent 3** answers that one question using Agent 2's ML-readiness score — see below. Runs for any of Agent 2's 5 supported domains, not just Insurance, and runs on every request regardless of Stage 0A's cache outcome (its answer depends on the specific question, not just dataset identity). Otherwise this step is skipped.
-8. All agents' results come back together in one response (`agent1`, `agent2`, `agent3`, plus `fingerprint`/`copy_id`/`was_cached` from Stage 0A).
-9. **Follow-up questions** don't need to repeat steps 1-6 — `POST /pipeline/ask` (with the earlier response's `agent2.run_id`) re-asks Agent 3 alone, skipping Agent 1's quality gate and Agent 2's full profiling entirely.
+## 🧠 Agent 3 — Analytics Agent *(optional)*
 
-See [`Agent-Orchestrator/README.md`](./Agent-Orchestrator/README.md) for the Dataset Registry's full design (Master Dataset / DatasetCopy schema, reference counting, the `/datasets/*` admin endpoints for listing and deleting masters/copies).
+Agent 3 (`Analytics-Agent/`, port `8003`) is a FastAPI + LangGraph service — a domain-agnostic, dataset-driven analytics engine that answers one business question per call.
 
-## Agent 3 — Analytics Agent (optional; runs for any supported domain)
+### When It Runs
 
-Agent 3 (`Analytics-Agent/`, port 8003) is a FastAPI service like Agent 1/2 — a thin `app/main.py`/`app/routes/` shell over a LangGraph `StateGraph` (`app/agents/analytics_agent/`). Internally it's a domain-agnostic, dataset-driven analytics engine (capability resolution → KPI discovery → question interpretation → planning → scheduling → model selection → execution → evidence → narration, see `Analytics-Agent/README.md` for the full stage-by-stage breakdown) via DuckDB + ML/LLM tools (`app/services/`) — Insurance is its one fully-built reference domain (curated KPIs, pre-computed variance drivers, business rules), and a dataset with no matching domain plugin still gets a real generic report (trend/forecast/correlation/anomaly/segmentation/... on whatever columns the dataset actually has), not a skip. The orchestrator calls its `POST /analyze` over httpx exactly like it calls Agent 1/2:
+| Condition | Result |
+|---|---|
+| Upload is `.csv` **and** `business_question` supplied | ✅ Agent 3 runs |
+| Upload is `.xlsx` / `.xls` | ⏭ Skipped — DuckDB reads CSV only |
+| No `business_question` | ⏭ Skipped — Agent 3 answers one question at a time |
 
-- **Runs whenever**: the upload is a `.csv` and `business_question` was supplied — for any of Agent 2's 5 supported domains (`Finance`, `Payments`, `Customer`, `HR`, `Insurance`), not just Insurance. Otherwise `agent3` in the response is `{"status": "skipped", "reason": "..."}`, and the reason names the actual capability gap (wrong file type, no question) rather than the domain. Root-cause and comparative-style analyses additionally prefer whichever column the question itself names (e.g. "net profit" → `net_profit_actual`) over a generic structural default, when the dataset has a matching column.
-- **Inputs it's given**: the same uploaded file (posted straight through, no temp file on the orchestrator's side anymore), and Agent 2's `ml_readiness`/`llm_readiness` scores *and* their full breakdown (from `agent2.readiness_assessments` — strengths/blocking_issues/evidence, not just the score) as Form fields.
-- **Explains itself**: every `status: "ok"` response carries `execution_trace` (step-by-step: intent → ML gate/engine → LLM gate/engine, each with real per-step timing and, where a real model ran, its version/accuracy from `ml/model_registry.json`) and `execution_summary` (a compact rollup) — see [`API_REFERENCE.md`](./API_REFERENCE.md#execution_trace--execution_summary).
-- **Best-effort**: if it's unreachable or returns a non-200, `agent3.status == "failed"` with a reason — this never fails Agent 1/2's already-successful result.
-- **Setup**: covered by the normal Quick Start above (`pip install -r requirements.txt` includes its deps — `duckdb`, `prophet`, `lightgbm`, `xgboost`, `scikit-learn`, `shap` — and it falls back to the root `.env`'s `GROQ_API_KEY`, same as Agent 1). Nothing separate to clone or install.
-- Configured via `Agent-Orchestrator/.env`: `ANALYTICS_AGENT_BASE_URL` (defaults to `http://127.0.0.1:8003`).
-- A standalone local-testing CLI (no HTTP server needed) is still available at `Analytics-Agent/scripts/cli.py --query "..."`.
-- Originally built as a separate project by a colleague (github.com/VirenKhapra/Analytics-agent-for-project-3) and vendored in here; its own repo still exists independently if contributing changes back upstream.
-- **Asking a follow-up question?** Use `POST /pipeline/ask` instead of `/pipeline/run` — re-uploads the file (Agent 3 needs real rows to query; nothing durably stores them elsewhere) but skips Agent 1 and Agent 2's actual pipelines, reusing Agent 2's already-persisted readiness scores by `run_id`. See [`Agent-Orchestrator/README.md`](./Agent-Orchestrator/README.md#re-asking-agent-3-without-re-running-the-whole-pipeline).
+Works for any of Agent 2's 5 supported domains (`Finance`, `Payments`, `Customer`, `HR`, `Insurance`). A dataset with no matching domain plugin still gets a **real generic report** (trend/forecast/correlation/anomaly/segmentation on whatever columns the dataset actually has) — not a skip.
 
-## How scoring works (at a glance)
+### 10-Stage Analytics Pipeline
 
-This file is the map, not a duplicate — each service's own README has the
-full formulas. The short version, so you know where to look:
+```
+Stage 0 · Build Dataset Context   →  Stage 1 · Resolve Capabilities
+Stage 2 · Discover KPIs           →  Stage 3 · Interpret Question
+Stage 4 · Plan Analytics          →  Stage 5 · Schedule Analyses
+Stage 6 · Execute (ML engine)     →  Stage 7 · Execute (LLM engine)
+Stage 8 · Collect Evidence        →  Stage 9 · Narrate + Record Memory
+```
 
-| Score | Computed by | Formula shape | Full detail |
+### What It Explains
+
+Every `status: "ok"` response carries:
+- **`execution_trace`** — step-by-step: intent → ML gate → LLM gate, with real per-step timing and model version/accuracy from `ml/model_registry.json`
+- **`execution_summary`** — compact rollup of what ran and why
+
+### Re-asking Without Re-running
+
+```bash
+POST /pipeline/ask
+  run_id=<earlier agent2.run_id>
+  file=<same CSV>
+  business_question=<new question>
+```
+
+Reuses Agent 2's already-persisted readiness scores — skips Agent 1 and Agent 2's full pipelines entirely.
+
+### Standalone CLI *(no HTTP server needed)*
+
+```bash
+python Analytics-Agent/scripts/cli.py --query "What is the loss ratio trend?"
+```
+
+---
+
+## 📊 How Scoring Works
+
+| Score | Computed by | Formula | Full detail |
 |---|---|---|---|
-| Quality gate (pass/fail) | Agent 1 | 10 weighted checks, weights sum to 100, `passing_score = 75` | [`Schema-Intelligence-Layer/README.md`](./Schema-Intelligence-Layer/README.md#7-how-scoring-works-the-quality-gate) |
-| Overall data quality score | Agent 2 | `Σ(weight × score) / Σ(weight)` over assessed dimensions only (`not_assessable` dimensions excluded from both sides, never treated as zero) | [`Data-Profiling-Agent/README.md`](./Data-Profiling-Agent/README.md#data-quality-dimensions) |
-| AI readiness (analytics / ml / llm / overall) | Agent 2 | Per-assessment point-additions, 0-100; `≥80 ready`, `≥60 partially_ready`, `<60 not_ready`. Each reports `score` / `dataset_score` / `task_compatibility_score` — three different questions, not three names for the same number | [`Data-Profiling-Agent/README.md`](./Data-Profiling-Agent/README.md#ai-readiness) |
-| Capability resolution (structural + execution) | Agent 3 | Structural = can this analysis run at all (dataset shape); execution = does Agent 2's `ml_readiness_score` clear Agent 3's 75.0 threshold — never a new score, Agent 2's number reused directly | [`Analytics-Agent/README.md`](./Analytics-Agent/README.md#how-scoring-works) |
+| **Quality gate** (pass/fail) | Agent 1 | 10 weighted checks, weights sum to 100; `passing_score = 75` | [`Schema-Intelligence-Layer/README.md`](./Schema-Intelligence-Layer/README.md) |
+| **Data quality score** | Agent 2 | `Σ(weight × score) / Σ(weight)` — `not_assessable` dimensions excluded from both sides | [`Data-Profiling-Agent/README.md`](./Data-Profiling-Agent/README.md) |
+| **AI readiness** (analytics / ml / llm / overall) | Agent 2 | Point-additions, 0–100; `≥80` ready · `≥60` partially ready · `<60` not ready | [`Data-Profiling-Agent/README.md`](./Data-Profiling-Agent/README.md) |
+| **Capability resolution** | Agent 3 | `ml_readiness_score ≥ 75.0` threshold — Agent 2's number reused directly, never recomputed | [`Analytics-Agent/README.md`](./Analytics-Agent/README.md) |
 
-**One correction worth internalizing**: Agent 3 never receives Agent 2's
-`dataset_score`/`task_compatibility_score` split — the Orchestrator's
-`_readiness_and_features()` forwards `ml_readiness`/`llm_readiness`'s
-plain composite `.score` field. If a dataset-only readiness number and a
-question-specific one ever look like they should both be visible to Agent
-3, they aren't — only the blended composite makes the trip.
+> **Note:** Agent 3 receives Agent 2's blended composite `.score` — not the `dataset_score` / `task_compatibility_score` split. Only the composite makes the trip.
 
-## Known constraints worth knowing
+---
 
-- Agent 2 supports 5 primary domains (`Finance`, `Payments`, `Customer`, `HR`, `Insurance`) — each backed by a real config file defining its secondary domains, hierarchy templates, chart templates, and business rules. Agent 1's classification is open-vocabulary (14+ suggested domains), so `Agent-Orchestrator`'s `extract_domain_and_metadata` node canonicalizes known synonyms (e.g. `"Human Resources"` → `"HR"`, case variants) onto Agent 2's exact 5 strings before forwarding — a domain that's genuinely unsupported (or a synonym not yet in the map) still stops the pipeline with a clear error rather than guessing.
-- LLM features (column descriptions, domain classification, rule suggestions) use Groq, degrading gracefully to deterministic fallbacks if the API key is missing/rate-limited/unreachable — the pipeline never hard-fails because of the LLM.
-- Agent 3's own engine is domain-agnostic (see `Analytics-Agent/README.md`'s Domain Plugin architecture) — only CSV, not Excel, and its real ML models (Prophet/LightGBM/IsolationForest/XGBoost/K-Means) are trained and persisted against the Insurance dataset only, so a non-Insurance upload's ML-eligible analyses fit fresh per request rather than predicting against a cached model. A genuinely unsupported domain (not one of the 5 above) still stops the pipeline at Agent 2's own `UNSUPPORTED_DOMAIN` check, before Agent 3 is ever reached — that's Agent 2's capability boundary, not Agent 3's gate.
+## 🤖 ML Models Inside Agent 3
+
+| Model | Library | Use Case |
+|---|---|---|
+| **Prophet** | `prophet` | Monthly time-series forecasting with seasonality |
+| **LightGBM Regressor** | `lightgbm` | Multi-feature KPI prediction (141 mixed-type columns) |
+| **Isolation Forest** | `scikit-learn` | Financial ratio anomaly detection (unsupervised) |
+| **XGBoost Classifier** | `xgboost` | Variance driver classification with SHAP explainability |
+| **K-Means** | `scikit-learn` | Risk profile segmentation |
+| **DuckDB SQL** | `duckdb` | In-process CSV querying (no database server needed) |
+
+> Models are pre-trained against the **Insurance reference dataset** (`train.py`). Non-Insurance domain uploads fit fresh models per request.
+
+---
+
+## ⚠️ Known Constraints
+
+| Constraint | Detail |
+|---|---|
+| **Agent 2 domains** | Supports exactly 5: `Finance` · `Payments` · `Customer` · `HR` · `Insurance`. Agent 1's classification is open-vocabulary (14+ suggested domains); the Orchestrator canonicalizes known synonyms before forwarding. A genuinely unsupported domain stops the pipeline with a clear error. |
+| **Agent 3 file type** | CSV only — DuckDB's `read_csv_auto`. Excel uploads skip Agent 3 with an explicit reason. |
+| **LLM dependency** | All LLM calls (column descriptions, domain classification, rule suggestions) use Groq, degrading gracefully to deterministic fallbacks if the API key is missing, rate-limited, or unreachable. The pipeline **never hard-fails** because of the LLM. |
+| **ML model scope** | Agent 3's pre-trained models (Prophet/LightGBM/IsolationForest/XGBoost/K-Means) are trained against the Insurance dataset only. Other domains fit fresh per-request models. |
+| **Follow-up re-upload** | `POST /pipeline/ask` requires re-uploading the file — Agent 3 queries live CSV rows via DuckDB; nothing durably stores raw file bytes after the original request. |
+| **startup script** | `start-all.ps1` is Windows PowerShell with hardcoded native Postgres paths. macOS/Linux users need to start services manually. |
+
+---
+
+## 🗂 Project Structure
+
+```
+📦 mva/
+├── 📁 Schema-Intelligence-Layer/   # Agent 1 — Quality gate + classification  (port 8000)
+│   ├── app/
+│   │   ├── agents/                 # LangGraph StateGraph nodes
+│   │   ├── config.py
+│   │   ├── models/
+│   │   ├── prompts/
+│   │   ├── routes/
+│   │   └── services/
+│   ├── config/                     # quality_threshold.json + domain prompts
+│   └── tests/
+│
+├── 📁 Data-Profiling-Agent/        # Agent 2 — Deep profiling + readiness     (port 8001)
+│   ├── app/
+│   │   ├── agents/                 # LangGraph StateGraph + 2 ReAct sub-agents
+│   │   ├── api/
+│   │   ├── core/
+│   │   ├── db/
+│   │   ├── models/
+│   │   ├── repositories/
+│   │   ├── schemas/
+│   │   └── services/               # charts/ · classification/ · domains/ ·
+│   │                               # hierarchy/ · profiling/ · quality/ ·
+│   │                               # readiness/ · rules/ · llm/
+│   ├── config/                     # Per-domain YAML configs (5 domains)
+│   ├── migrations/                 # Alembic migrations
+│   └── tests/
+│
+├── 📁 Agent-Orchestrator/          # Orchestrator — chains agents + registry   (port 8002)
+│   ├── app/
+│   │   ├── agents/
+│   │   │   └── orchestration_agent/
+│   │   │       ├── graph.py
+│   │   │       ├── nodes/pipeline.py   # All pipeline nodes + domain canonicalization
+│   │   │       └── state.py
+│   │   ├── config.py
+│   │   ├── routes/
+│   │   └── services/
+│   │       └── dataset_registry/   # SHA-256 fingerprint + Postgres cache
+│   └── tests/
+│
+├── 📁 Analytics-Agent/             # Agent 3 — NL analytics Q&A               (port 8003)
+│   ├── app/
+│   │   ├── agents/analytics_agent/ # 10-stage LangGraph pipeline
+│   │   ├── routes/
+│   │   └── services/
+│   │       ├── analyzers/
+│   │       ├── capability_resolution/
+│   │       ├── domain_plugins/     # Insurance (full) + Generic fallback + 4 thin plugins
+│   │       ├── ml/                 # forecaster · anomaly_detector · classifier
+│   │       ├── planning/
+│   │       └── tools/
+│   ├── config/                     # ml_config.yml · business_rules.yml · KPI definitions
+│   ├── ml/                         # Trained model artifacts + registry.json
+│   ├── scripts/cli.py              # Standalone test CLI
+│   └── train.py                    # Offline model trainer
+│
+├── 📁 Shared-Postgres/             # DB init scripts + README                  (port 5433)
+│   └── init/01-create-agent-schemas.sql
+│
+├── 📁 test_data/                   # Sample CSVs/XLSXs (Banking, Insurance, Retail …)
+│
+├── requirements.txt                # Single dependency set for all services
+├── requirements-dev.txt            # Test dependencies (pytest, factory-boy …)
+├── start-all.ps1                   # One-command launcher (Windows PowerShell)
+├── .env.example                    # Root shared config template
+├── README.md                       # ← you are here
+└── API_REFERENCE.md                # Full endpoint reference for all 4 services
+```
+
+---
+
+## 📄 Further Reading
+
+| Document | Contents |
+|---|---|
+| [`API_REFERENCE.md`](./API_REFERENCE.md) | Every endpoint across all 4 services, request shapes, and response fields |
+| [`Schema-Intelligence-Layer/README.md`](./Schema-Intelligence-Layer/README.md) | Quality gate formulas, classification logic, Agent 1 API detail |
+| [`Data-Profiling-Agent/README.md`](./Data-Profiling-Agent/README.md) | Profiling dimensions, readiness scoring, rule suggestion lifecycle, Agent 2 API detail |
+| [`Agent-Orchestrator/README.md`](./Agent-Orchestrator/README.md) | Dataset Registry design, caching lifecycle, `/pipeline/ask` detail |
+| [`Analytics-Agent/README.md`](./Analytics-Agent/README.md) | 10-stage pipeline, domain plugin architecture, ML model rationale, Agent 3 API detail |
+| [`Shared-Postgres/README.md`](./Shared-Postgres/README.md) | Schema layout, role/permission setup, `search_path` gotcha and fix |
+
+---
+
+<div align="center">
+
+*Built as a research project into multi-agent LLM pipeline design.*  
+*Agent 3 originally developed by [@VirenKhapra](https://github.com/VirenKhapra/Analytics-agent-for-project-3) — vendored and integrated here.*
+
+</div>
